@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+websockets
+python-dotenv
+requests
+pyjwt
+numpy
+pandas
+pydantic
+sqlalchemy
+scikit-learn
+joblib
+passlib[bcrypt]

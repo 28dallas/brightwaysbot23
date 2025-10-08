@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=sqlite:///./trading.db
+      - JWT_SECRET=${JWT_SECRET}
+      - DERIV_APP_ID=${DERIV_APP_ID}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
