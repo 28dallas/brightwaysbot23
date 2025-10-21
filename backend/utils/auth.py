@@ -1,9 +1,12 @@
 import jwt
 import hashlib
+import logging
 from datetime import datetime, timedelta
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from utils.config import Config
+
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
 
@@ -19,19 +22,36 @@ def create_jwt_token(user_id: int, email: str) -> str:
         'email': email,
         'exp': datetime.utcnow() + timedelta(days=7)
     }
-    return jwt.encode(payload, Config.JWT_SECRET, algorithm=Config.JWT_ALGORITHM)
+    return jwt.encode(payload, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
 
 def verify_jwt_token(token: str) -> dict:
+    if not token or not token.strip():
+        raise HTTPException(status_code=401, detail="Token required")
+
     try:
-        payload = jwt.decode(token, Config.JWT_SECRET, algorithms=[Config.JWT_ALGORITHM])
+        payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=[Config.JWT_ALGORITHM])
+
+        # Validate required fields
+        if not payload.get('user_id') or not payload.get('email'):
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        logger.error(f"Token verification error: {e}")
+        raise HTTPException(status_code=401, detail="Token verification failed")
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+        
+    token = credentials.credentials.strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Token required")
+        
     payload = verify_jwt_token(token)
     return payload
 

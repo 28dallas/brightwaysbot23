@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import numpy as np
 from typing import Optional
 import uuid
+from services.deriv_trader import DerivTrader
 
 load_dotenv()
 
@@ -186,12 +187,109 @@ async def place_trade(trade: TradeRequest):
 
 @app.get("/api/balance")
 async def get_balance():
-    conn = sqlite3.connect('trading.db')
-    cursor = conn.execute("SELECT balance FROM users WHERE id = 1")
-    balance = cursor.fetchone()[0]
-    conn.close()
+    import logging
+    logger = logging.getLogger("uvicorn.error")
+    api_token = os.getenv('DERIV_API_TOKEN')
+
+    logger.info(f"Fetching balance with API token: {'set' if api_token else 'not set'}")
+
+    trader = None
+    conn = None
     
-    return {"balance": balance, "currency": "USD", "account_type": "demo"}
+    try:
+        if api_token:
+            # Try to get real balance from Deriv
+            trader = DerivTrader()
+            
+            # Try live account first with timeout
+            try:
+                logger.info("Connecting to Deriv live account")
+                connected = await asyncio.wait_for(
+                    trader.connect(api_token=api_token, is_demo=False), 
+                    timeout=10
+                )
+                
+                if connected and trader.authorized:
+                    balance = await asyncio.wait_for(trader.get_balance(), timeout=10)
+                    if balance is not None and isinstance(balance, (int, float)):
+                        # Update DB balance safely
+                        conn = sqlite3.connect('trading.db')
+                        conn.execute(
+                            "UPDATE users SET balance = ?, account_type = 'live' WHERE id = 1", 
+                            (float(balance),)
+                        )
+                        conn.commit()
+                        conn.close()
+                        conn = None
+                        
+                        await trader.close()
+                        return {"balance": float(balance), "currency": "USD", "account_type": "live"}
+                        
+            except asyncio.TimeoutError:
+                logger.warning("Live account connection timeout")
+            except Exception as e:
+                logger.error(f"Live account error: {e}")
+            finally:
+                if trader:
+                    await trader.close()
+
+            # Try demo account
+            try:
+                logger.info("Connecting to Deriv demo account")
+                trader = DerivTrader()
+                connected = await asyncio.wait_for(
+                    trader.connect(api_token=api_token, is_demo=True), 
+                    timeout=10
+                )
+                
+                if connected and trader.authorized:
+                    balance = await asyncio.wait_for(trader.get_balance(), timeout=10)
+                    if balance is not None and isinstance(balance, (int, float)):
+                        # Update DB balance safely
+                        conn = sqlite3.connect('trading.db')
+                        conn.execute(
+                            "UPDATE users SET balance = ?, account_type = 'demo' WHERE id = 1", 
+                            (float(balance),)
+                        )
+                        conn.commit()
+                        conn.close()
+                        conn = None
+                        
+                        await trader.close()
+                        return {"balance": float(balance), "currency": "USD", "account_type": "demo"}
+                        
+            except asyncio.TimeoutError:
+                logger.warning("Demo account connection timeout")
+            except Exception as e:
+                logger.error(f"Demo account error: {e}")
+            finally:
+                if trader:
+                    await trader.close()
+
+    except Exception as e:
+        logger.error(f"Unexpected error in balance fetch: {e}")
+    finally:
+        # Ensure cleanup
+        if trader:
+            await trader.close()
+        if conn:
+            conn.close()
+
+    # Fallback to DB balance with error handling
+    try:
+        conn = sqlite3.connect('trading.db')
+        cursor = conn.execute("SELECT balance, account_type FROM users WHERE id = 1")
+        row = cursor.fetchone()
+        balance = float(row[0]) if row and row[0] is not None else 10000.0
+        account_type = row[1] if row and row[1] else "demo"
+        conn.close()
+        
+        logger.info(f"Returning fallback balance: {balance} ({account_type})")
+        return {"balance": balance, "currency": "USD", "account_type": account_type}
+        
+    except Exception as e:
+        logger.error(f"Database fallback error: {e}")
+        return {"balance": 10000.0, "currency": "USD", "account_type": "demo"}
 
 @app.get("/api/ai/prediction")
 async def get_ai_prediction():

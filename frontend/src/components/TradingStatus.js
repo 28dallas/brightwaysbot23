@@ -12,7 +12,7 @@ const TradingStatus = () => {
   const fetchActiveTrades = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8002/api/trades/active', {
+      const response = await fetch('http://localhost:8001/api/trades/active', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {

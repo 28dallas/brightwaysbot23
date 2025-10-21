@@ -481,6 +481,79 @@ const AITradingHub = ({ currentPrice, priceHistory, onTradeExecute, onSettingsCo
         </div>
       )}
 
+      {/* Manual Trade Placement */}
+      <div className="mt-8 p-6 bg-gray-700 rounded-lg">
+        <h3 className="text-lg font-semibold mb-4">🛠️ Manual Trade Placement</h3>
+        <form id="manual-trade-form" className="space-y-4">
+          <div>
+            <label htmlFor="contractType" className="block text-sm font-medium mb-1">Contract Type</label>
+            <select id="contractType" name="contractType" className="w-full px-3 py-2 bg-gray-600 rounded text-white">
+              <option value="DIGITEVEN">Even Digits</option>
+              <option value="DIGITODD">Odd Digits</option>
+              <option value="DIGITMATCH">Digit Match</option>
+              <option value="CALL">Call</option>
+              <option value="PUT">Put</option>
+              <option value="RANGE">Range</option>
+              <option value="DIGITDIFF">Digit Diff</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="stake" className="block text-sm font-medium mb-1">Stake Amount ($)</label>
+            <input type="number" id="stake" name="stake" min="1" max="1000" defaultValue="5" className="w-full px-3 py-2 bg-gray-600 rounded text-white" />
+          </div>
+          <div>
+            <label htmlFor="symbol" className="block text-sm font-medium mb-1">Symbol</label>
+            <select id="symbol" name="symbol" className="w-full px-3 py-2 bg-gray-600 rounded text-white">
+              <option value="R_100">Volatility 100 Index</option>
+              <option value="R_25">Volatility 25 Index</option>
+              <option value="R_50">Volatility 50 Index</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="duration" className="block text-sm font-medium mb-1">Duration (ticks)</label>
+            <input type="number" id="duration" name="duration" min="1" max="60" defaultValue="5" className="w-full px-3 py-2 bg-gray-600 rounded text-white" />
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={async () => {
+                const form = document.getElementById('manual-trade-form');
+                const contractType = form.contractType.value;
+                const stake = parseFloat(form.stake.value);
+                const symbol = form.symbol.value;
+                const duration = parseInt(form.duration.value);
+
+                const tradeData = {
+                  contract_type: contractType,
+                  stake: stake,
+                  symbol: symbol,
+                  duration: duration
+                };
+
+                try {
+                  const response = await fetch('http://localhost:8001/api/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(tradeData)
+                  });
+                  const result = await response.json();
+                  if (result.success) {
+                    alert('Trade placed successfully!');
+                  } else {
+                    alert('Trade failed: ' + (result.error || 'Unknown error'));
+                  }
+                } catch (error) {
+                  alert('Error placing trade: ' + error.message);
+                }
+              }}
+              className="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded font-medium transition-colors"
+            >
+              Place Manual Trade
+            </button>
+          </div>
+        </form>
+      </div>
+
       {/* Consensus Indicator */}
       {!loading && (
         <div className="mt-6 p-4 bg-gradient-to-r from-purple-800 to-blue-800 rounded-lg">

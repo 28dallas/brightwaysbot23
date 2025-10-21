@@ -1,0 +1,66 @@
+import torch
+import torch.nn as nn
+import numpy as np
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+class TransformerModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size):
+        super(TransformerModel, self).__init__()
+        self.transformer = nn.Transformer(
+            d_model=input_size,
+            nhead=8,  # You can adjust the number of heads
+            num_encoder_layers=num_layers,
+            num_decoder_layers=num_layers,
+            dim_feedforward=hidden_size,
+            dropout=0.1
+        )
+        self.linear = nn.Linear(input_size, output_size)
+        self.relu = nn.ReLU()
+
+    def forward(self, src, tgt):
+        """
+        Forward pass of the Transformer model.
+        Args:
+            src (torch.Tensor): Source sequence tensor of shape (S, N, E), where S is the sequence length,
+                                N is the batch size, and E is the embedding dimension (input_size).
+            tgt (torch.Tensor): Target sequence tensor of shape (T, N, E), where T is the target sequence length,
+                                N is the batch size, and E is the embedding dimension (input_size).
+        Returns:
+            torch.Tensor: Output tensor of shape (T, N, output_size).
+        """
+        output = self.transformer(src, tgt)
+        output = self.linear(output)
+        output = self.relu(output)
+        return output
+
+class TransformerAIPredictor:
+    def __init__(self, input_size=10, hidden_size=256, num_layers=2, output_size=10, model_path='transformer_model.pth'):
+        self.model = TransformerModel(input_size, hidden_size, num_layers, output_size)
+        self.model_path = model_path
+        self.prices = []
+
+    def add_price(self, price):
+        self.prices.append(price)
+        if len(self.prices) > 100:
+            self.prices.pop(0)
+
+    def predict_next_digit(self):
+        self.model.eval()  # Set the model to evaluation mode
+        with torch.no_grad():  # Disable gradient calculation
+            # Convert prices to a numpy array and then to a PyTorch tensor
+            src_sequence = torch.tensor(np.array(self.prices[-10:])).float().unsqueeze(1).unsqueeze(0)
+            tgt_sequence = torch.tensor(np.array(self.prices[-10:])).float().unsqueeze(1).unsqueeze(0)
+            output = self.model(src_sequence, tgt_sequence)
+            predicted_probs = torch.softmax(output[0, 0], dim=0).numpy()
+            predicted_digit = np.argmax(predicted_probs)
+            confidence = predicted_probs[predicted_digit]
+            logger.info(f"Predicted digit: {predicted_digit}, Confidence: {confidence:.4f}")
+            return {"prediction": int(predicted_digit), "confidence": float(confidence)}
+
+    def load_model(self):
+        self.model.load_state_dict(torch.load(self.model_path))
+
+    def save_model(self):
+        torch.save(self.model.state_dict(), self.model_path)

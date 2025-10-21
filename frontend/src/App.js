@@ -9,6 +9,9 @@ import NotificationCenter from './components/NotificationCenter';
 import TradingStatus from './components/TradingStatus';
 import AutoTrading from './components/AutoTrading';
 import AITradingHub from './components/AITradingHub';
+import AccountSettings from './components/AccountSettings';
+import TradingModeToggle from './components/TradingModeToggle';
+import Login from './components/Login';
 
 function App() {
   const [price, setPrice] = useState(0);
@@ -18,10 +21,11 @@ function App() {
   const [historicalTicks, setHistoricalTicks] = useState([]);
   const [historicalTrades, setHistoricalTrades] = useState([]);
   const [trades, setTrades] = useState([]);
-  const [balance, setBalance] = useState(0);
-  const [initialBalance, setInitialBalance] = useState(0);
+  const [balance, setBalance] = useState(10000);
+  const [initialBalance, setInitialBalance] = useState(10000);
   const [stakeAmount, setStakeAmount] = useState(1);
   const [user, setUser] = useState({ email: 'demo@brightbot.com', full_name: 'Demo User' });
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [strategies, setStrategies] = useState([]);
   const [aiPrediction, setAiPrediction] = useState(null);
@@ -37,17 +41,17 @@ function App() {
 
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8001/ws');
-    
+
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         setPrice(data.price ?? 0);
-        
+
         // Update AI prediction if available
         if (data.ai_prediction) {
           setAiPrediction(data.ai_prediction);
         }
-        
+
         // Update digit frequency
         setDigitFreq(prev => {
           const newFreq = [...prev];
@@ -56,7 +60,7 @@ function App() {
           }
           return newFreq;
         });
-        
+
         // Update price history
         setPriceHistory(prev => [...prev.slice(-50), {
           time: new Date(data.timestamp).toLocaleTimeString(),
@@ -90,34 +94,104 @@ function App() {
       }
     };
 
+    ws.onclose = (event) => {
+      console.warn('WebSocket connection closed:', event);
+      // Optionally, set some state to indicate connection closed
+    };
+
+    ws.onerror = (event) => {
+      console.error('WebSocket error:', event);
+      // Optionally, set some state to indicate error
+    };
+
     return () => ws.close();
   }, [isTrading, balance, stakeAmount, trades.length]);
 
   // Fetch balance and historical data
   useEffect(() => {
+    const checkApiTokenSetup = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        // No auth, show modal for setup (or login first, but for demo, show modal)
+        setShowApiTokenModal(true);
+        return;
+      }
+
+      try {
+        const response = await fetch('http://localhost:8001/api/user', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          const userData = await response.json();
+          if (!userData.api_token_set) {
+            setShowApiTokenModal(true);
+          }
+        } else {
+          // Invalid token, clear and show modal
+          localStorage.removeItem('token');
+          setShowApiTokenModal(true);
+        }
+      } catch (error) {
+        console.error('Error checking API token setup:', error);
+        setShowApiTokenModal(true);
+      }
+    };
+
+    checkApiTokenSetup();
     fetchData();
     fetchAIPrediction();
   }, []);
+  
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchData();
+    }
+  }, [isAuthenticated]);
 
   const fetchData = async () => {
     try {
-      const response = await fetch('http://localhost:8001/api/balance');
-      const data = await response.json();
-      
-      if (data.balance !== undefined) {
-        setBalance(data.balance);
-        setInitialBalance(data.balance);
-      } else {
-        setBalance(10000);
-        setInitialBalance(10000);
+      const headers = {};
+      if (apiToken) {
+        headers['api_token'] = apiToken;
       }
-      setAccountType(data.account_type || 'demo');
-      setHistoricalTicks(data.ticks || []);
-      setHistoricalTrades(data.trades || []);
+      const accountTypeParam = accountType ? `&account_type=${accountType}` : '';
+      
+      const balanceResponse = await fetch(`http://localhost:8001/api/balance?${Date.now()}${accountTypeParam}`, { headers });
+      if (balanceResponse.ok) {
+        const balanceData = await balanceResponse.json();
+        console.log('Balance data received:', balanceData);
+        
+        const newBalance = balanceData.balance || 10000;
+        setBalance(newBalance);
+        if (initialBalance === 10000) {
+          setInitialBalance(newBalance);
+        }
+        setAccountType(balanceData.account_type || 'demo');
+      } else {
+        console.error('Balance API error:', balanceResponse.status);
+        setBalance(10000);
+        setAccountType('demo');
+      }
+      
+      try {
+        const historyResponse = await fetch('http://localhost:8001/api/history', { headers });
+        if (historyResponse.ok) {
+          const historyData = await historyResponse.json();
+          setHistoricalTicks(historyData.ticks || []);
+          setHistoricalTrades(historyData.trades || []);
+        }
+      } catch (historyError) {
+        console.log('History fetch failed, continuing with balance only');
+      }
+      
     } catch (error) {
       console.error('Error fetching data:', error);
       setBalance(10000);
       setInitialBalance(10000);
+      setAccountType('demo');
     }
   };
 
@@ -134,49 +208,106 @@ function App() {
 
 
   const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+    setIsAuthenticated(false);
     setBalance(10000);
     setTrades([]);
   };
+  
+  const handleLogin = (userData) => {
+    setUser(userData);
+    setIsAuthenticated(true);
+    setBalance(userData.balance);
+    setInitialBalance(userData.balance);
+    setAccountType(userData.account_type);
+  };
 
   const toggleAccountType = async () => {
-    if (accountType === 'demo') {
-      setShowApiTokenModal(true);
-    } else {
-      setAccountType('demo');
-      fetchData();
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+
+      const response = await fetch('http://localhost:8001/api/account/toggle', {
+        method: 'POST',
+        headers
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        setAccountType(result.account_type);
+        setBalance(result.balance);
+        setInitialBalance(result.balance);
+        alert(`Switched to ${result.account_type.toUpperCase()} mode. Balance: $${result.balance}`);
+        setTimeout(() => fetchData(), 1000); // Refresh after 1 second
+      } else {
+        alert('Failed to toggle account type: ' + (result.detail || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error toggling account type:', error);
+      alert('Error toggling account type');
     }
   };
 
   const saveApiToken = async () => {
     try {
-      if (apiToken.trim()) {
-        setAccountType('live');
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8001/api/account/api-token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ api_token: apiToken })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
         setShowApiTokenModal(false);
-        alert('API token saved! Now in live trading mode.');
+        setApiToken('');
+        setBalance(data.balance);
+        setAccountType(data.account_type);
+        alert(data.message);
+        fetchData();
+      } else {
+        alert(data.message || 'Failed to save API token');
       }
     } catch (error) {
       console.error('Error saving API token:', error);
+      alert('Error saving API token');
     }
   };
 
   const placeTrade = async (prediction) => {
     try {
-      const result = Math.random() > 0.5 ? 'win' : 'lose';
-      const pnl = result === 'win' ? stakeAmount * 0.8 : -stakeAmount;
+      const response = await fetch('http://localhost:8001/api/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contract_type: selectedContract,
+          symbol: symbol,
+          amount: stakeAmount,
+          duration: tradeDuration,
+          duration_unit: 't',
+          barrier: barrier,
+          prediction: prediction
+        })
+      });
       
-      const newTrade = {
-        id: trades.length + 1,
-        timestamp: new Date().toISOString(),
-        stake: stakeAmount,
-        prediction,
-        result,
-        pnl
-      };
+      const result = await response.json();
       
-      setTrades(prev => [newTrade, ...prev]);
-      setBalance(prev => prev + pnl);
-      
-      alert(`Trade ${result}! P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}`);
+      if (result.success) {
+        alert(`Trade placed! Contract ID: ${result.contract_id}`);
+        fetchData(); // Refresh balance and trades
+      } else {
+        alert('Trade failed: ' + (result.detail || 'Unknown error'));
+      }
     } catch (error) {
       console.error('Error placing trade:', error);
       alert('Error placing trade');
@@ -224,6 +355,8 @@ function App() {
 
 
 
+
+  
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <Notifications trades={trades} balance={balance} />
@@ -247,7 +380,7 @@ function App() {
             {accountType.toUpperCase()} {accountType === 'demo' ? '📊' : '💰'}
           </button>
           <div className="text-white">
-            👋 {user.full_name || user.email}
+            👋 {user?.full_name || user?.email}
           </div>
           <button onClick={handleLogout} className="text-gray-400 hover:text-white">
             Reset Demo
@@ -261,6 +394,7 @@ function App() {
           { key: 'ai-hub', label: '🤖 AI Trading Hub', icon: '🤖' },
           { key: 'strategy', label: '🛠️ Strategy Builder', icon: '🛠️' },
           { key: 'analytics', label: '📈 Advanced Analytics', icon: '📈' },
+          { key: 'settings', label: '⚙️ Account Settings', icon: '⚙️' },
           { key: 'notifications', label: '🔔 Notifications', icon: '🔔' }
         ].map(tab => (
           <button
@@ -458,6 +592,10 @@ function App() {
         <TradingStatus />
       </div>
       
+      <div className="mb-6">
+        <TradingModeToggle />
+      </div>
+      
       <div className="mt-6">
         <AutoTrading />
       </div>
@@ -572,6 +710,10 @@ function App() {
         <AdvancedAnalytics trades={trades} balance={balance} initialBalance={initialBalance} />
       )}
       
+      {activeTab === 'settings' && (
+        <AccountSettings />
+      )}
+      
       {activeTab === 'notifications' && (
         <NotificationCenter />
       )}
@@ -582,19 +724,28 @@ function App() {
           <div className="bg-gray-800 p-6 rounded-lg max-w-md w-full mx-4">
             <h3 className="text-xl font-semibold mb-4">Enter Deriv API Token</h3>
             <p className="text-gray-400 mb-4 text-sm">
-              To trade with real money, you need to provide your Deriv API token. 
-              Get it from your Deriv account settings.
+              To trade with real money, you need to provide your Deriv API token.
+              The system will automatically use the appropriate App ID.
             </p>
             <input
               type="password"
               placeholder="Enter your API token"
               value={apiToken}
               onChange={(e) => setApiToken(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white mb-4"
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
             />
+            <p className="text-xs text-gray-400 mb-4">
+              <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+                How to get API token
+              </a>
+            </p>
             <div className="flex space-x-3">
               <button
-                onClick={() => setShowApiTokenModal(false)}
+                onClick={() => {
+                  setShowApiTokenModal(false);
+                  setApiToken('');
+                }}
                 className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded"
               >
                 Cancel

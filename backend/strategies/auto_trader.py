@@ -16,11 +16,22 @@ class AutoTrader:
         self.trader = DerivTrader()
         self.strategies = {}
         
-    async def start_auto_trading(self, user_id: int, strategy_config: Dict):
+    async def start_auto_trading(self, user_id: int, strategy_config: Dict, api_token: str):
         """Start automated trading for a user"""
+        if self.is_running:
+            logger.warning(f"Auto trading is already running for user {user_id}.")
+            return
+
         self.is_running = True
         logger.info(f"Starting auto trading for user {user_id}")
         
+        # Connect to Deriv once at the start
+        connected = await self.trader.connect(api_token)
+        if not connected:
+            logger.error(f"Failed to connect to Deriv for user {user_id}. Stopping auto-trader.")
+            self.is_running = False
+            return
+
         try:
             while self.is_running:
                 # Get AI prediction
@@ -68,32 +79,28 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"Auto trading error: {e}")
         finally:
+            # Close connection when trading stops
+            await self.trader.close()
             self.is_running = False
+            logger.info(f"Auto trading stopped for user {user_id}.")
     
     def stop_auto_trading(self):
         """Stop automated trading"""
         self.is_running = False
-        logger.info("Auto trading stopped")
     
     async def _get_user_balance(self, user_id: int) -> float:
         """Get user balance from database"""
-        # This would query the database for user balance
-        return 1000.0  # Placeholder
-    
+        # In a real scenario, this should fetch the live balance from the trader
+        if self.trader and self.trader.is_connected and self.trader.authorized:
+            balance = await self.trader.get_balance()
+            return balance if balance is not None else 1000.0 # Fallback to a default
+        return 1000.0  # Placeholder if not connected
+
     async def _execute_trade(self, user_id: int, trade_request: Dict) -> Dict:
         """Execute a trade for the user"""
         try:
-            # Connect to Deriv
-            connected = await self.trader.connect()
-            if not connected:
-                return {"error": "Failed to connect to Deriv"}
-            
             # Place trade
             result = await self.trader.buy_contract(trade_request)
-            
-            # Close connection
-            await self.trader.close()
-            
             return result
             
         except Exception as e:

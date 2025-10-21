@@ -28,14 +28,15 @@ class MultiModelPredictor:
             os.makedirs(self.model_dir)
     
     def add_price(self, price: float, volume: float = 1.0):
-        """Add price data to history"""
+        """Add price data to history with efficient memory management"""
         self.price_history.append({
             'price': price, 
             'volume': volume, 
             'timestamp': len(self.price_history)
         })
+        # Use slice for better performance than pop(0)
         if len(self.price_history) > 1000:
-            self.price_history.pop(0)
+            self.price_history = self.price_history[-500:]
     
     def extract_features(self, lookback: int = 30) -> Optional[np.ndarray]:
         """Extract comprehensive features for ML models"""
@@ -92,9 +93,20 @@ class MultiModelPredictor:
         odd_count = len(last_digits) - even_count
         even_odd_ratio = even_count / odd_count if odd_count > 0 else 1
         
-        # Autocorrelation
-        autocorr_1 = np.corrcoef(returns[:-1], returns[1:])[0, 1] if len(returns) > 1 else 0
-        autocorr_5 = np.corrcoef(returns[:-5], returns[5:])[0, 1] if len(returns) > 5 else 0
+        # Autocorrelation with error handling
+        try:
+            autocorr_1 = np.corrcoef(returns[:-1], returns[1:])[0, 1] if len(returns) > 1 else 0
+            if np.isnan(autocorr_1):
+                autocorr_1 = 0
+        except:
+            autocorr_1 = 0
+            
+        try:
+            autocorr_5 = np.corrcoef(returns[:-5], returns[5:])[0, 1] if len(returns) > 5 else 0
+            if np.isnan(autocorr_5):
+                autocorr_5 = 0
+        except:
+            autocorr_5 = 0
         
         features = np.array([
             price_vs_sma5, price_vs_sma10, price_vs_sma20,
@@ -167,46 +179,57 @@ class MultiModelPredictor:
         return macd_line, signal_line
     
     def predict_all_models(self) -> Dict:
-        """Get predictions from all models"""
-        features = self.extract_features()
-        if features is None:
+        """Get predictions from all models with error handling"""
+        try:
+            features = self.extract_features()
+            if features is None:
+                return self._fallback_predictions()
+        except Exception as e:
+            logger.error(f"Feature extraction failed: {e}")
             return self._fallback_predictions()
         
         predictions = {}
         
         for model_name, model in self.models.items():
             try:
-                if self.is_trained[model_name]:
-                    # Scale features
+                if self.is_trained.get(model_name, False):
+                    # Scale features with error handling
                     features_scaled = self.scalers[model_name].transform(features)
                     
-                    # Get prediction
+                    # Get prediction with validation
                     if hasattr(model, 'predict_proba'):
                         proba = model.predict_proba(features_scaled)[0]
                         prediction = np.argmax(proba)
-                        confidence = np.max(proba)
+                        confidence = float(np.max(proba))
                     else:
                         prediction = model.predict(features_scaled)[0]
                         confidence = 0.7
                     
+                    # Validate prediction range
+                    prediction = max(0, min(9, int(prediction)))
+                    confidence = max(0.1, min(1.0, confidence))
+                    
                     predictions[model_name] = {
-                        'next_digit': int(prediction),
-                        'confidence': float(confidence),
+                        'next_digit': prediction,
+                        'confidence': confidence,
                         'signal': self._generate_signal(features_scaled[0], model_name),
                         'contract_type': self._suggest_contract_type(features_scaled[0], model_name),
-                        'stake': self._calculate_optimal_stake(features_scaled[0]),
-                        'duration': self._suggest_duration(model_name)
+                        'stake': float(self._calculate_optimal_stake(features_scaled[0])),
+                        'duration': int(self._suggest_duration(model_name))
                     }
                 else:
-                    # Use fallback for untrained models
                     predictions[model_name] = self._model_fallback(model_name)
                     
             except Exception as e:
                 logger.error(f"Error in {model_name} prediction: {e}")
                 predictions[model_name] = self._model_fallback(model_name)
         
-        # Add ensemble prediction
-        predictions['ensemble'] = self._create_ensemble_prediction(predictions)
+        # Add ensemble prediction with error handling
+        try:
+            predictions['ensemble'] = self._create_ensemble_prediction(predictions)
+        except Exception as e:
+            logger.error(f"Ensemble prediction failed: {e}")
+            predictions['ensemble'] = self._model_fallback('ensemble')
         
         return predictions
     

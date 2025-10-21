@@ -98,7 +98,7 @@ class EnhancedAIPredictor:
         recent_prices = np.array([p['price'] for p in self.price_history[-20:]])
         price_changes = np.diff(recent_prices)
         
-        trend = np.mean(price_changes)
+        trend = float(np.mean(price_changes))
         volatility = np.std(price_changes)
         
         # Last digit analysis

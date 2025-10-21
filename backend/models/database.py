@@ -17,6 +17,7 @@ class User(Base):
     balance = Column(Float, default=10000.0)
     created_at = Column(DateTime, default=datetime.utcnow)
     api_token = Column(String)
+    app_id = Column(String, nullable=True)
     subscription_plan = Column(String, default='free')
     
     trades = relationship("Trade", back_populates="user")

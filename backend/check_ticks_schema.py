@@ -1,7 +1,7 @@
 import sqlite3
 
 def check_ticks_schema():
-    conn = sqlite3.connect('backend/trading.db')
+    conn = sqlite3.connect('trading.db')
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(ticks);")
     columns = cursor.fetchall()
