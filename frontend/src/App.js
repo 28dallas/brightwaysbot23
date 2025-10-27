@@ -24,8 +24,8 @@ function App() {
   const [balance, setBalance] = useState(10000);
   const [initialBalance, setInitialBalance] = useState(10000);
   const [stakeAmount, setStakeAmount] = useState(1);
-  const [user, setUser] = useState({ email: 'demo@brightbot.com', full_name: 'Demo User' });
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [strategies, setStrategies] = useState([]);
   const [aiPrediction, setAiPrediction] = useState(null);
@@ -40,7 +40,9 @@ function App() {
   const [symbol, setSymbol] = useState('R_100');
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8001/ws');
+    const token = localStorage.getItem('token');
+    const wsUrl = token ? `ws://localhost:8001/ws?token=${token}` : 'ws://localhost:8001/ws';
+    const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
       try {
@@ -107,13 +109,12 @@ function App() {
     return () => ws.close();
   }, [isTrading, balance, stakeAmount, trades.length]);
 
-  // Fetch balance and historical data
+  // Check authentication and setup on mount
   useEffect(() => {
-    const checkApiTokenSetup = async () => {
+    const checkAuth = async () => {
       const token = localStorage.getItem('token');
       if (!token) {
-        // No auth, show modal for setup (or login first, but for demo, show modal)
-        setShowApiTokenModal(true);
+        setIsAuthenticated(false);
         return;
       }
 
@@ -126,24 +127,36 @@ function App() {
 
         if (response.ok) {
           const userData = await response.json();
+          setUser(userData);
+          setIsAuthenticated(true);
+          setBalance(userData.balance || 10000);
+          setInitialBalance(userData.balance || 10000);
+          setAccountType(userData.account_type || 'demo');
           if (!userData.api_token_set) {
             setShowApiTokenModal(true);
           }
         } else {
-          // Invalid token, clear and show modal
+          // Invalid token, clear and show login
           localStorage.removeItem('token');
-          setShowApiTokenModal(true);
+          localStorage.removeItem('user');
+          setIsAuthenticated(false);
         }
       } catch (error) {
-        console.error('Error checking API token setup:', error);
-        setShowApiTokenModal(true);
+        console.error('Error checking authentication:', error);
+        setIsAuthenticated(false);
       }
     };
 
-    checkApiTokenSetup();
-    fetchData();
-    fetchAIPrediction();
+    checkAuth();
   }, []);
+
+  // Fetch data when authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchData();
+      fetchAIPrediction();
+    }
+  }, [isAuthenticated]);
   
   useEffect(() => {
     if (isAuthenticated) {
@@ -153,17 +166,20 @@ function App() {
 
   const fetchData = async () => {
     try {
-      const headers = {};
+      const token = localStorage.getItem('token');
+      const headers = {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
       if (apiToken) {
         headers['api_token'] = apiToken;
       }
       const accountTypeParam = accountType ? `&account_type=${accountType}` : '';
-      
+
       const balanceResponse = await fetch(`http://localhost:8001/api/balance?${Date.now()}${accountTypeParam}`, { headers });
       if (balanceResponse.ok) {
         const balanceData = await balanceResponse.json();
         console.log('Balance data received:', balanceData);
-        
+
         const newBalance = balanceData.balance || 10000;
         setBalance(newBalance);
         if (initialBalance === 10000) {
@@ -175,7 +191,7 @@ function App() {
         setBalance(10000);
         setAccountType('demo');
       }
-      
+
       try {
         const historyResponse = await fetch('http://localhost:8001/api/history', { headers });
         if (historyResponse.ok) {
@@ -186,7 +202,7 @@ function App() {
       } catch (historyError) {
         console.log('History fetch failed, continuing with balance only');
       }
-      
+
     } catch (error) {
       console.error('Error fetching data:', error);
       setBalance(10000);
@@ -357,6 +373,10 @@ function App() {
 
 
   
+  if (!isAuthenticated) {
+    return <Login onLogin={handleLogin} />;
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <Notifications trades={trades} balance={balance} />
@@ -383,7 +403,7 @@ function App() {
             👋 {user?.full_name || user?.email}
           </div>
           <button onClick={handleLogout} className="text-gray-400 hover:text-white">
-            Reset Demo
+            Logout
           </button>
         </div>
       </div>

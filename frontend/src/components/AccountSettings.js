@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 
 const AccountSettings = () => {
   const [apiToken, setApiToken] = useState('');
+  const [appId, setAppId] = useState('');
   const [accountType, setAccountType] = useState('demo');
   const [balance, setBalance] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -37,7 +38,10 @@ const AccountSettings = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ api_token: apiToken })
+        body: JSON.stringify({ 
+          api_token: apiToken,
+          app_id: appId 
+        })
       });
       
       const data = await response.json();
@@ -47,8 +51,9 @@ const AccountSettings = () => {
         setBalance(data.balance);
         setAccountType(data.account_type);
         setApiToken('');
+        setAppId('');
       } else {
-        setMessage('Failed to update API token');
+        setMessage(data.detail || 'Failed to update API token');
       }
     } catch (error) {
       setMessage('Error updating API token');
@@ -96,11 +101,19 @@ const AccountSettings = () => {
           onChange={(e) => setApiToken(e.target.value)}
           disabled={loading}
         />
+        <h4>Deriv App ID</h4>
+        <input
+          type="text"
+          placeholder="Enter your Deriv App ID (optional)"
+          value={appId}
+          onChange={(e) => setAppId(e.target.value)}
+          disabled={loading}
+        />
         <button onClick={updateApiToken} disabled={loading || !apiToken}>
           {loading ? 'Updating...' : 'Update Token'}
         </button>
-        <p className="text-xs text-gray-400 mt-2">
-          App ID is not required - the system uses the default App ID automatically.
+        <p className="text-xs text-gray-400 mt-2" style={{fontSize: '12px', color: '#6b7280', marginTop: '8px'}}>
+          If you don't provide an App ID, the system will use a default one.
         </p>
       </div>
 

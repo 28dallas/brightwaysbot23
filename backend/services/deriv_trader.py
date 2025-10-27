@@ -19,35 +19,38 @@ class DerivTrader:
         config_app_id = Config.DERIV_DEMO_APP_ID if is_demo else Config.DERIV_LIVE_APP_ID
         effective_app_id = app_id or config_app_id or "1089"  # Default fallback
         url = f"{Config.DERIV_WS_URL}?app_id={effective_app_id}"
-        
+
         for attempt in range(3):
             try:
-                logger.info(f"Connecting to Deriv - URL: {url}")
+                logger.info(f"Connecting to Deriv - URL: {url}, Demo: {is_demo}, API Token: {bool(api_token)}")
                 self.ws = await websockets.connect(
-                    url, 
-                    ping_interval=30, 
+                    url,
+                    ping_interval=30,
                     ping_timeout=10,
                     close_timeout=5
                 )
                 self.is_connected = True
                 self.reconnect_count = 0
-                
-                if api_token:
+
+                # For demo mode, we don't need authorization
+                if api_token and not is_demo:
                     auth_result = await self.authorize(api_token)
                     if not auth_result:
                         logger.error("Authorization failed")
                         await self.close()
                         return False
-                
-                logger.info(f"Successfully connected to Deriv - Demo: {is_demo}")
+                elif is_demo:
+                    self.authorized = True  # Demo mode doesn't require auth
+
+                logger.info(f"Successfully connected to Deriv - Demo: {is_demo}, Authorized: {self.authorized}")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Connection attempt {attempt + 1} failed: {e}")
                 await self.close()
                 if attempt < 2:
                     await asyncio.sleep(2)
-                
+
         return False
     
     async def authorize(self, api_token: str) -> Optional[Dict]:
@@ -82,8 +85,8 @@ class DerivTrader:
     
     async def buy_contract(self, contract_request: Dict) -> Dict:
         """Place trade with proper error handling"""
-        if not self.is_connected or not self.authorized:
-            return {"error": "Not connected or authorized"}
+        if not self.is_connected:
+            return {"error": {"message": "Not connected"}}
 
         try:
             # Build parameters based on contract type
@@ -124,7 +127,7 @@ class DerivTrader:
 
         except Exception as e:
             logger.error(f"Trade execution failed: {e}")
-            return {"error": str(e)}
+            return {"error": {"message": str(e)}}
     
     async def get_balance(self) -> Optional[float]:
         """Get balance with retry logic"""

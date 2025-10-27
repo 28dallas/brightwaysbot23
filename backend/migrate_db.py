@@ -11,6 +11,18 @@ def migrate_db():
         print("Adding app_id column to users table")
         cursor.execute("ALTER TABLE users ADD COLUMN app_id TEXT;")
 
+    if 'hashed_password' not in users_columns:
+        print("Adding hashed_password column to users table")
+        cursor.execute("ALTER TABLE users ADD COLUMN hashed_password TEXT;")
+
+    if 'api_token' not in users_columns:
+        print("Adding api_token column to users table")
+        cursor.execute("ALTER TABLE users ADD COLUMN api_token TEXT;")
+
+    if 'subscription_plan' not in users_columns:
+        print("Adding subscription_plan column to users table")
+        cursor.execute("ALTER TABLE users ADD COLUMN subscription_plan TEXT DEFAULT 'free';")
+
     # Check if strategy_id column exists in trades
     cursor.execute("PRAGMA table_info(trades);")
     trades_columns = [col[1] for col in cursor.fetchall()]

@@ -10,7 +10,7 @@ from datetime import datetime
 from contextlib import contextmanager
 from sqlalchemy.orm import Session
 
-from models.database import create_tables, get_db, User, Tick
+from models.database import create_tables, get_db, User, Tick, SessionLocal
 from api.routes import router as api_router
 from services.contract_monitor import ContractMonitor
 from services.notification_service import NotificationService
@@ -48,6 +48,27 @@ app.add_middleware(
 
 # Initialize database
 create_tables()
+
+def ensure_default_user():
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == 1).first()
+        if not user:
+            hashed_password = hash_password("demo")
+            user = User(
+                id=1,
+                email="demo@brightbot.com",
+                hashed_password=hashed_password,
+                full_name="Demo User",
+                balance=10000.0,
+                account_type='demo'
+            )
+            db.add(user)
+            db.commit()
+    finally:
+        db.close()
+
+ensure_default_user()
 
 # Initialize services
 deriv_trader = DerivTrader()
@@ -157,21 +178,42 @@ async def websocket_endpoint(websocket: WebSocket):
     local_trader = None
 
     @contextmanager
-    def db_session_scope():
-        db = next(get_db())
+    def db_session_scope(db_session=None):
+        if db_session:
+            yield db_session
+            return
+        
+        db = SessionLocal()
         try:
             yield db
         finally:
             db.close()
 
     try:
-        # Create local trader instance to avoid conflicts
+        # Authenticate user from token in query param
+        token = websocket.query_params.get("token")
+        if not token:
+            await websocket.close(code=1008, reason="Token not provided")
+            return
+
+        try:
+            user_data = verify_jwt_token(token)
+        except Exception as e:
+            logger.error(f"Token verification failed: {e}")
+            await websocket.close(code=1008, reason="Invalid token")
+            return
+
+        # Get user from database to ensure they exist
+        with db_session_scope() as db:
+            user = db.query(User).filter(User.id == user_data['user_id']).first()
+            if not user:
+                await websocket.close(code=1008, reason="User not found")
+                return
+
+            api_token = user.api_token if user else os.getenv('DERIV_API_TOKEN')
+            app_id = user.app_id if user and user.app_id else os.getenv('DERIV_APP_ID', '1089')
+
         local_trader = DerivTrader()
-        
-        # Connect to Deriv with API token
-        from utils.config import Config
-        api_token = getattr(Config, 'DERIV_API_TOKEN', None)
-        app_id = getattr(Config, 'DERIV_APP_ID', '1089')  # Default fallback
         connected = await local_trader.connect(api_token=api_token, app_id=app_id, is_demo=not api_token)
         
         if not connected:

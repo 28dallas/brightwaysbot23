@@ -47,40 +47,55 @@ async def get_balance(current_user: dict = Depends(get_current_user), db: Sessio
 
     logger.info(f"Balance API called with effective_token: {effective_token}, account_type: {account_type}, app_id: {effective_app_id}")
 
+    # For demo accounts, return stored balance or default
+    if account_type == 'demo':
+        if user and user.balance is not None:
+            return {"balance": float(user.balance), "account_type": "demo"}
+        else:
+            return {"balance": 10000.0, "account_type": "demo"}
+
+    # For live accounts, try to fetch from Deriv API
     if effective_token:
         temp_trader = DerivTrader()
         try:
             connected = await asyncio.wait_for(
-                temp_trader.connect(api_token=effective_token, app_id=effective_app_id, is_demo=(account_type == 'demo')),
+                temp_trader.connect(api_token=effective_token, app_id=effective_app_id, is_demo=False),
                 timeout=15
             )
             if connected and temp_trader.authorized:
                 balance = await asyncio.wait_for(temp_trader.get_balance(), timeout=10)
                 if balance is not None:
                     await temp_trader.close()
-                    logger.info(f"Balance fetched successfully: {balance}")
-                    return {"balance": float(balance), "account_type": account_type}
+                    logger.info(f"Live balance fetched successfully: {balance}")
+                    # Update user's stored balance
+                    if user:
+                        user.balance = balance
+                        db.commit()
+                    return {"balance": float(balance), "account_type": "live"}
             await temp_trader.close()
         except Exception as e:
             await temp_trader.close()
-            logger.error(f"Balance fetch failed: {e}")
+            logger.error(f"Live balance fetch failed: {e}")
 
-    # Fallback to mock balance if no token or connection failed
-    if account_type == 'live':
-        return {"balance": 5000.0, "account_type": "live"}
+    # Fallback to stored balance or default for live accounts
+    if user and user.balance is not None:
+        return {"balance": float(user.balance), "account_type": "live"}
     else:
-        return {"balance": 10000.0, "account_type": "demo"}
+        return {"balance": 5000.0, "account_type": "live"}
 
 @router.post("/trade")
-async def place_trade(trade_request: dict, db: Session = Depends(get_db)):
+async def place_trade(trade_request: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     import os
     api_token = os.getenv('DERIV_API_TOKEN')
     trading_mode = os.getenv('TRADING_MODE', 'demo')
     is_demo = trading_mode == 'demo'
     actual_stake = trade_request['amount']
-    
+
+    # For demo mode, don't use API token
+    effective_api_token = None if is_demo else api_token
+
     try:
-        connected = await deriv_trader.connect(api_token, is_demo=is_demo)
+        connected = await deriv_trader.connect(effective_api_token, is_demo=is_demo)
         if connected:
             trade_result = await deriv_trader.buy_contract({
                 "contract_type": trade_request["contract_type"],
@@ -91,17 +106,17 @@ async def place_trade(trade_request: dict, db: Session = Depends(get_db)):
                 "barrier": trade_request.get("barrier"),
                 "currency": "USD"
             })
-            
+
             await deriv_trader.close()
-            
+
             if "error" in trade_result:
                 raise HTTPException(status_code=400, detail=trade_result["error"]["message"])
-            
+
             contract_id = trade_result.get("buy", {}).get("contract_id", "unknown")
-            
+
             # Record trade
             trade = Trade(
-                user_id=1,
+                user_id=current_user['user_id'],
                 stake=actual_stake,
                 prediction=trade_request.get('prediction', 0),
                 result='pending',
@@ -111,10 +126,10 @@ async def place_trade(trade_request: dict, db: Session = Depends(get_db)):
                 is_demo=is_demo,
                 confidence=trade_request.get('confidence', 0.5)
             )
-            
+
             db.add(trade)
             db.commit()
-            
+
             return {
                 "success": True,
                 "contract_id": contract_id,
@@ -123,7 +138,7 @@ async def place_trade(trade_request: dict, db: Session = Depends(get_db)):
                 "actual_stake": actual_stake
             }
     except Exception as e:
-        logger.error(f"Demo trade failed: {e}")
+        logger.error(f"Trade failed: {e}")
         raise HTTPException(status_code=500, detail=f"Trade failed: {str(e)}")
 
 @router.get("/ai/prediction")
@@ -189,10 +204,14 @@ async def update_api_token(token_data: dict, current_user: dict = Depends(get_cu
         temp_trader = DerivTrader()
         try:
             effective_app_id = app_id or "1089"  # Default fallback
-            connected = await temp_trader.connect(api_token=api_token, app_id=effective_app_id, is_demo=False)
+            logger.info(f"Testing API token with app_id: {effective_app_id}")
+            connected = await asyncio.wait_for(
+                temp_trader.connect(api_token=api_token, app_id=effective_app_id, is_demo=False),
+                timeout=15
+            )
             if connected and temp_trader.authorized:
                 # Get live balance to verify token works
-                balance = await temp_trader.get_balance()
+                balance = await asyncio.wait_for(temp_trader.get_balance(), timeout=10)
                 await temp_trader.close()
 
                 if balance is not None:
@@ -203,7 +222,7 @@ async def update_api_token(token_data: dict, current_user: dict = Depends(get_cu
                     db.commit()
 
                     # Update .env file for persistence
-                    from utils.env_manager import update_env_file
+                    from api.env_manager import update_env_file
                     updates = {
                         'DERIV_API_TOKEN': api_token,
                         'TRADING_MODE': 'live'
@@ -220,12 +239,15 @@ async def update_api_token(token_data: dict, current_user: dict = Depends(get_cu
                     }
 
             await temp_trader.close()
-            raise HTTPException(status_code=400, detail="Invalid API token or App ID")
+            raise HTTPException(status_code=400, detail="Invalid API token. Please check your token and try again.")
 
+        except asyncio.TimeoutError:
+            await temp_trader.close()
+            raise HTTPException(status_code=408, detail="Connection to Deriv timed out. Please try again.")
         except Exception as e:
             await temp_trader.close()
             logger.error(f"API token validation failed: {e}")
-            raise HTTPException(status_code=400, detail="Failed to validate API token")
+            raise HTTPException(status_code=400, detail=f"Failed to validate API token: {str(e)}")
     else:
         # Remove API token (switch to demo)
         user.api_token = None
@@ -235,7 +257,7 @@ async def update_api_token(token_data: dict, current_user: dict = Depends(get_cu
         db.commit()
 
         # Update .env file for persistence
-        from utils.env_manager import update_env_file
+        from api.env_manager import update_env_file
         update_env_file({
             'DERIV_API_TOKEN': '',
             'TRADING_MODE': 'demo'
@@ -246,6 +268,68 @@ async def update_api_token(token_data: dict, current_user: dict = Depends(get_cu
             "message": "Switched to demo account",
             "balance": 10000.0,
             "account_type": "demo"
+        }
+
+@router.post("/account/toggle")
+async def toggle_account_type(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == current_user['user_id']).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.account_type == 'demo':
+        # Switch to live - need API token
+        if not user.api_token:
+            raise HTTPException(status_code=400, detail="API token required to switch to live account")
+
+        # Test the API token
+        temp_trader = DerivTrader()
+        try:
+            effective_app_id = user.app_id or "1089"
+            connected = await temp_trader.connect(api_token=user.api_token, app_id=effective_app_id, is_demo=False)
+            if connected and temp_trader.authorized:
+                balance = await temp_trader.get_balance()
+                await temp_trader.close()
+
+                if balance is not None:
+                    user.account_type = 'live'
+                    user.balance = balance
+                    db.commit()
+
+                    # Update .env file for persistence
+                    from utils.env_manager import update_env_file
+                    update_env_file({
+                        'TRADING_MODE': 'live'
+                    })
+
+                    return {
+                        "account_type": "live",
+                        "balance": balance,
+                        "message": "Switched to live account"
+                    }
+
+            await temp_trader.close()
+            raise HTTPException(status_code=400, detail="Failed to connect with API token")
+
+        except Exception as e:
+            await temp_trader.close()
+            logger.error(f"Live account switch failed: {e}")
+            raise HTTPException(status_code=400, detail="Failed to switch to live account")
+    else:
+        # Switch to demo
+        user.account_type = 'demo'
+        user.balance = 10000.0
+        db.commit()
+
+        # Update .env file for persistence
+        from utils.env_manager import update_env_file
+        update_env_file({
+            'TRADING_MODE': 'demo'
+        })
+
+        return {
+            "account_type": "demo",
+            "balance": 10000.0,
+            "message": "Switched to demo account"
         }
 
 @router.post("/trading-mode")
