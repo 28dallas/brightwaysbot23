@@ -12,10 +12,14 @@ import numpy as np
 from typing import Optional
 import uuid
 from services.deriv_trader import DerivTrader
+from api import auth
 
 load_dotenv()
 
 app = FastAPI()
+
+# Include auth routes
+app.include_router(auth.router, prefix="", tags=["auth"])
 
 # Pydantic models
 class TradeRequest(BaseModel):

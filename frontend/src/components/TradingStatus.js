@@ -3,25 +3,11 @@ import React, { useState, useEffect } from 'react';
 const TradingStatus = () => {
   const [activeTrades, setActiveTrades] = useState([]);
 
-  useEffect(() => {
-    fetchActiveTrades();
-    const interval = setInterval(fetchActiveTrades, 5000); // Refresh every 5 seconds
-    return () => clearInterval(interval);
-  }, []);
+  // Disabled - auto trading works without this display
 
-  const fetchActiveTrades = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8001/api/trades/active', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setActiveTrades(data.trades || []);
-      }
-    } catch (error) {
-      console.error('Error fetching active trades:', error);
-    }
+  const fetchActiveTrades = () => {
+    // Component disabled - check balance for trading activity
+    setActiveTrades([]);
   };
 
   return (

@@ -6,12 +6,14 @@ import asyncio
 import json
 import numpy
 import websockets
+import os
 from datetime import datetime
 from contextlib import contextmanager
 from sqlalchemy.orm import Session
 
-from models.database import create_tables, get_db, User, Tick, SessionLocal
+from models.database import create_tables, get_db, User, Tick, Trade, SessionLocal
 from api.routes import router as api_router
+from api.ai_routes import router as ai_router
 from services.contract_monitor import ContractMonitor
 from services.notification_service import NotificationService
 from services.market_data import MarketDataService
@@ -20,7 +22,8 @@ from services.deriv_trader import DerivTrader
 from services.risk_manager import RiskManager
 from ai.predictor import EnhancedAIPredictor
 from ai.multi_model_predictor import MultiModelPredictor
-from utils.auth import hash_password, verify_password, create_jwt_token, get_current_user
+from utils.auth import hash_password, verify_password, create_jwt_token, get_current_user, verify_jwt_token
+from fastapi import Depends
 from utils.logger import setup_logger
 from utils.json_encoder import json_dumps, convert_numpy_types
 from utils.error_handler import error_handler
@@ -32,15 +35,22 @@ app = FastAPI(title="Brightbot Trading API", version="2.0.0")
 
 @app.middleware("http")
 async def cors_handler(request, call_next):
+    if request.method == "OPTIONS":
+        response = JSONResponse(content={})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+    
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3003"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -113,6 +123,7 @@ class ApiTokenUpdate(BaseModel):
 
 # Include API routes
 app.include_router(api_router, prefix="/api")
+app.include_router(ai_router, prefix="/api/ai")
 
 @app.post("/api/register")
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
@@ -383,16 +394,29 @@ async def _send_simulated_data(websocket: WebSocket):
 
 
 
-@app.get("/api/trades/active")
-async def get_active_trades():
-    """Get active trades placed by the bot"""
-    return {"trades": list(trade_manager.active_trades.values()), "count": len(trade_manager.active_trades)}
+
 
 @app.get("/api/trading-mode")
 async def get_trading_mode_status():
     """Get current trading mode"""
     from api.trading_mode import get_trading_mode
     return {"trading_mode": get_trading_mode()}
+
+@app.get("/api/current-user-debug")
+async def debug_current_user(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Debug endpoint to check current user and API token status"""
+    user = db.query(User).filter(User.id == current_user['user_id']).first()
+    if not user:
+        return {"error": "User not found"}
+    
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "has_api_token": bool(user.api_token),
+        "account_type": user.account_type,
+        "balance": user.balance,
+        "api_token_length": len(user.api_token) if user.api_token else 0
+    }
 
 @app.get("/api/test-token")
 async def test_api_token():
@@ -449,13 +473,226 @@ async def sell_contract(contract_id: str):
     return result
 
 @app.post("/api/auto-trading/start")
-async def start_auto_trading(strategy_config: dict):
-    asyncio.create_task(auto_trader.start_auto_trading(1, strategy_config))
-    return {"success": True}
+async def start_auto_trading(request_data: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter(User.id == current_user['user_id']).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        is_demo = user.account_type == 'demo'
+        
+        logger.info(f"Starting auto trading for user {user.id} in {user.account_type} mode")
+        
+        # Extract strategy config from request data
+        strategy_config = {
+            "type": "fixed_stake",
+            "fixed_stake_amount": 1.0,
+            "min_confidence": request_data.get('min_confidence', 0.6),
+            "contract_type": request_data.get('contract_type', 'DIGITEVEN'),
+            "symbol": request_data.get('symbol', 'R_100'),
+            "duration": request_data.get('duration', 5),
+            "duration_unit": request_data.get('duration_unit', 't'),
+            "check_interval": request_data.get('check_interval', 30),
+            "trade_interval": request_data.get('trade_interval', 30)
+        }
+        
+        logger.info(f"Auto trading strategy: {strategy_config}")
+        
+        if is_demo:
+            # For demo mode, start demo auto trading
+            if auto_trader.is_running:
+                return {"success": False, "message": "Auto trading is already running"}
+            
+            auto_trader.is_running = True
+            asyncio.create_task(start_demo_auto_trading(user.id))
+            return {"success": True, "message": f"Auto trading started successfully in {user.account_type} mode"}
+        else:
+            # For live mode, require API token
+            if not user.api_token:
+                raise HTTPException(status_code=400, detail="API token required for live trading. Please set up your API token first.")
+            
+            # Test connection first
+            test_trader = DerivTrader()
+            try:
+                connected = await test_trader.connect(api_token=user.api_token, is_demo=False)
+                if not connected or not test_trader.authorized:
+                    await test_trader.close()
+                    raise HTTPException(status_code=400, detail="Failed to connect with API token. Please check your token.")
+                await test_trader.close()
+            except Exception as e:
+                logger.error(f"Auto trading connection test failed: {e}")
+                raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e)}")
+            
+            # Start live auto trading using the auto_trader
+            if auto_trader.is_running:
+                return {"success": False, "message": "Auto trading is already running"}
+            
+            asyncio.create_task(auto_trader.start_auto_trading(user.id, strategy_config, user.api_token))
+            return {"success": True, "message": f"Auto trading started successfully in {user.account_type} mode"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auto trading start error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start auto trading: {str(e)}")
 
 @app.post("/api/auto-trading/stop")
 async def stop_auto_trading():
-    auto_trader.stop_auto_trading()
+    try:
+        logger.info("Stopping auto trading")
+        auto_trader.stop_auto_trading()
+        return {"success": True, "message": "Auto trading stopped successfully"}
+    except Exception as e:
+        logger.error(f"Auto trading stop error: {e}")
+        return {"success": False, "message": f"Error stopping auto trading: {str(e)}"}
+
+@app.get("/api/auto-trading/status")
+async def get_auto_trading_status():
+    try:
+        is_running = auto_trader.is_running
+        return {
+            "is_running": is_running,
+            "message": "Auto trading is running" if is_running else "Auto trading is stopped"
+        }
+    except Exception as e:
+        logger.error(f"Auto trading status error: {e}")
+        return {
+            "is_running": False,
+            "message": f"Error checking status: {str(e)}"
+        }
+
+@app.post("/api/demo-trade")
+async def place_demo_trade(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Place a real trade on Deriv"""
+    import random
+    
+    try:
+        user = db.query(User).filter(User.id == current_user['user_id']).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        is_demo = user.account_type == 'demo'
+        
+        if is_demo:
+            # Place real demo trade on Deriv demo account
+            trader = DerivTrader()
+            try:
+                connected = await trader.connect(api_token=None, is_demo=True)
+                if not connected:
+                    raise HTTPException(status_code=400, detail="Failed to connect to Deriv demo")
+                
+                # Place a DIGITEVEN trade on demo
+                trade_request = {
+                    "contract_type": "DIGITEVEN",
+                    "symbol": "R_100",
+                    "amount": 1.0,
+                    "duration": 5,
+                    "duration_unit": "t"
+                }
+                
+                result = await trader.buy_contract(trade_request)
+                
+                if "buy" in result:
+                    contract_id = result['buy']['contract_id']
+                    stake = 1.0
+                    
+                    # Wait for trade to complete (simulate)
+                    await asyncio.sleep(2)
+                    
+                    # Check contract status
+                    contract_info = await trader.get_contract_info(contract_id)
+                    
+                    if contract_info and "proposal_open_contract" in contract_info:
+                        contract = contract_info["proposal_open_contract"]
+                        payout = float(contract.get("payout", 0))
+                        
+                        if payout > 0:
+                            # Win
+                            pnl = payout - stake
+                            user.balance += pnl
+                            result_text = "WIN"
+                        else:
+                            # Loss
+                            pnl = -stake
+                            user.balance -= stake
+                            result_text = "LOSS"
+                    else:
+                        # Assume loss if can't get status
+                        pnl = -stake
+                        user.balance -= stake
+                        result_text = "LOSS"
+                    
+                    db.commit()
+                    await trader.close()
+                    
+                    return {
+                        "success": True,
+                        "contract_id": contract_id,
+                        "result": result_text.lower(),
+                        "pnl": pnl,
+                        "new_balance": user.balance,
+                        "message": f"Demo trade: {result_text} - P&L: ${pnl:.2f} - Balance: ${user.balance:.2f}"
+                    }
+                else:
+                    await trader.close()
+                    error_msg = result.get('error', {}).get('message', 'Unknown error')
+                    raise HTTPException(status_code=400, detail=f"Demo trade failed: {error_msg}")
+                    
+            except Exception as e:
+                await trader.close()
+                raise HTTPException(status_code=500, detail=f"Demo trading error: {str(e)}")
+        else:
+            # Place real trade on Deriv for live mode
+            if not user.api_token:
+                raise HTTPException(status_code=400, detail="API token required for live trading")
+            
+            trader = DerivTrader()
+            try:
+                connected = await trader.connect(api_token=user.api_token, is_demo=False)
+                if not connected or not trader.authorized:
+                    raise HTTPException(status_code=400, detail="Failed to connect to Deriv")
+                
+                # Place a DIGITEVEN trade
+                trade_request = {
+                    "contract_type": "DIGITEVEN",
+                    "symbol": "R_100",
+                    "amount": 1.0,
+                    "duration": 5,
+                    "duration_unit": "t"
+                }
+                
+                result = await trader.buy_contract(trade_request)
+                
+                if "buy" in result:
+                    contract_id = result['buy']['contract_id']
+                    
+                    # Get updated balance
+                    new_balance = await trader.get_balance()
+                    if new_balance:
+                        user.balance = new_balance
+                        db.commit()
+                    
+                    await trader.close()
+                    
+                    return {
+                        "success": True,
+                        "contract_id": contract_id,
+                        "new_balance": new_balance or user.balance,
+                        "message": f"Live trade placed: {contract_id} - Balance: ${new_balance or user.balance:.2f}"
+                    }
+                else:
+                    await trader.close()
+                    error_msg = result.get('error', {}).get('message', 'Unknown error')
+                    raise HTTPException(status_code=400, detail=f"Trade failed: {error_msg}")
+                    
+            except Exception as e:
+                await trader.close()
+                raise HTTPException(status_code=500, detail=f"Trading error: {str(e)}")
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Trade error: {e}")
+        raise HTTPException(status_code=500, detail="Trade failed")
 
 @app.get("/api/ai/multi-predictions")
 async def get_multi_predictions():
@@ -541,6 +778,148 @@ async def startup_event():
     """Start background tasks on startup"""
     asyncio.create_task(monitor_trades())
     asyncio.create_task(notification_service.start_notification_worker())
+
+@app.post("/api/update-balance")
+async def update_balance(amount_data: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter(User.id == current_user['user_id']).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        amount = amount_data.get('amount', -1.0)
+        user.balance += amount
+        db.commit()
+        
+        return {
+            "success": True,
+            "new_balance": user.balance,
+            "change": amount
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Balance update failed")
+
+async def start_demo_auto_trading(user_id: int):
+    """Demo auto trading with simulated trades"""
+    logger.info(f"Starting DEMO auto trading for user {user_id}")
+    
+    import random
+    demo_balance = 10000.0
+    
+    try:
+        for i in range(5):
+            if not auto_trader.is_running:
+                break
+                
+            # Simulate trade
+            stake = 1.0
+            win = random.random() > 0.5
+            
+            if win:
+                payout = stake * 1.8
+                demo_balance += (payout - stake)
+                result = "WIN"
+            else:
+                demo_balance -= stake
+                result = "LOSS"
+            
+            logger.info(f"DEMO trade {i+1}/5: {result} - Balance: ${demo_balance:.2f}")
+            
+            # Update user balance in database
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    user.balance = demo_balance
+                    db.commit()
+            finally:
+                db.close()
+            
+            await asyncio.sleep(10)
+            
+    finally:
+        auto_trader.is_running = False
+        logger.info("Demo auto trading completed")
+
+async def start_simple_auto_trading(user_id: int, api_token: str):
+    """Auto trading - tries real trades, falls back to simulation"""
+    logger.info(f"Starting auto trading for user {user_id}")
+    
+    trader = DerivTrader()
+    use_real_trading = False
+    
+    # Force real trading connection
+    if not api_token:
+        logger.error("No API token provided - cannot trade")
+        auto_trader.is_running = False
+        return
+    
+    try:
+        logger.info(f"Connecting to Deriv with token: {api_token[:10]}...")
+        connected = await trader.connect(api_token=api_token, app_id="1089", is_demo=False)
+        
+        if connected and trader.authorized:
+            use_real_trading = True
+            logger.info("SUCCESS: Connected to REAL Deriv account for trading")
+        else:
+            logger.error("FAILED: Could not authorize with Deriv")
+            auto_trader.is_running = False
+            return
+    except Exception as e:
+        logger.error(f"Connection error: {e}")
+        auto_trader.is_running = False
+        return
+    
+    import random
+    
+    try:
+        for i in range(5):
+            if not auto_trader.is_running:
+                break
+                
+            try:
+                # Place REAL trade on Deriv
+                trade_request = {
+                    "contract_type": "DIGITEVEN",
+                    "symbol": "R_100",
+                    "amount": 1.0,
+                    "duration": 5,
+                    "duration_unit": "t"
+                }
+                
+                logger.info(f"Placing REAL trade {i+1}/5 on Deriv")
+                result = await trader.buy_contract(trade_request)
+                
+                if "buy" in result:
+                    contract_id = result['buy']['contract_id']
+                    logger.info(f"SUCCESS: REAL trade placed on Deriv - Contract ID: {contract_id}")
+                    
+                    # Get updated balance from Deriv
+                    await asyncio.sleep(3)
+                    real_balance = await trader.get_balance()
+                    
+                    if real_balance is not None:
+                        db = SessionLocal()
+                        try:
+                            user = db.query(User).filter(User.id == user_id).first()
+                            if user:
+                                old_balance = user.balance
+                                user.balance = real_balance
+                                db.commit()
+                                logger.info(f"Balance updated: ${old_balance:.2f} -> ${real_balance:.2f}")
+                        finally:
+                            db.close()
+                else:
+                    logger.error(f"TRADE FAILED: {result}")
+                
+                await asyncio.sleep(15)
+                
+            except Exception as e:
+                logger.error(f"Trade error: {e}")
+                
+    finally:
+        await trader.close()
+        auto_trader.is_running = False
+        logger.info("Live auto trading completed")
 
 if __name__ == "__main__":
     import uvicorn

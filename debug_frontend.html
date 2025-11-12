@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Auto Trading Debug</title>
+</head>
+<body>
+    <h1>Auto Trading Debug Test</h1>
+    <button onclick="testAutoTrading()">Test Auto Trading</button>
+    <div id="output"></div>
+
+    <script>
+        async function testAutoTrading() {
+            const output = document.getElementById('output');
+            
+            try {
+                // Login first
+                const loginResponse = await fetch('http://localhost:8001/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'demo@brightbot.com',
+                        password: 'demo'
+                    })
+                });
+                
+                const loginData = await loginResponse.json();
+                const token = loginData.token;
+                
+                output.innerHTML += '<p>✅ Login successful</p>';
+                
+                // Check status
+                const statusResponse = await fetch('http://localhost:8001/api/auto-trading/status', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                const statusData = await statusResponse.json();
+                output.innerHTML += `<p>📊 Current status: ${statusData.is_running ? 'RUNNING' : 'STOPPED'}</p>`;
+                
+                // Start auto trading
+                const startResponse = await fetch('http://localhost:8001/api/auto-trading/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        type: "fixed_stake",
+                        fixed_stake_amount: 1.0,
+                        min_confidence: 0.6,
+                        contract_type: "DIGITEVEN",
+                        symbol: "R_100",
+                        duration: 5,
+                        duration_unit: "t"
+                    })
+                });
+                
+                const startData = await startResponse.json();
+                output.innerHTML += `<p>🚀 Start response: ${startData.success ? '✅ SUCCESS' : '❌ FAILED'} - ${startData.message}</p>`;
+                
+                // Check status again
+                const statusResponse2 = await fetch('http://localhost:8001/api/auto-trading/status', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                const statusData2 = await statusResponse2.json();
+                output.innerHTML += `<p>📊 New status: ${statusData2.is_running ? 'RUNNING' : 'STOPPED'}</p>`;
+                
+                // Stop auto trading
+                setTimeout(async () => {
+                    const stopResponse = await fetch('http://localhost:8001/api/auto-trading/stop', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    
+                    const stopData = await stopResponse.json();
+                    output.innerHTML += `<p>🛑 Stop response: ${stopData.success ? '✅ SUCCESS' : '❌ FAILED'} - ${stopData.message}</p>`;
+                }, 3000);
+                
+            } catch (error) {
+                output.innerHTML += `<p>❌ Error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

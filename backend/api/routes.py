@@ -10,6 +10,10 @@ from models.database import get_db, User, Trade, Strategy
 from services.deriv_trader import DerivTrader
 from services.risk_manager import RiskManager
 from ai.predictor import EnhancedAIPredictor
+from ai.auto_trading_controller import AutoTradingController
+from ai.loss_prevention_ai import LossPreventionAI
+from ai.market_sentiment_analyzer import MarketSentimentAnalyzer
+from strategies.auto_trader import AutoTrader
 from utils.auth import get_current_user
 from utils.config import Config
 from utils.logger import setup_logger
@@ -20,6 +24,10 @@ router = APIRouter()
 deriv_trader = DerivTrader()
 risk_manager = RiskManager()
 ai_predictor = EnhancedAIPredictor()
+trading_controller = AutoTradingController()
+loss_prevention_ai = LossPreventionAI()
+market_analyzer = MarketSentimentAnalyzer()
+auto_trader = AutoTrader()
 
 @router.get("/user")
 async def get_user(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -36,52 +44,100 @@ async def get_user(current_user: dict = Depends(get_current_user), db: Session =
         "account_type": user.account_type
     }
 
-@router.get("/balance")
-async def get_balance(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db), api_token: str = None, account_type: str = 'demo'):
+@router.post("/balance")
+async def get_balance(balance_request: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     import asyncio
     import os
 
     user = db.query(User).filter(User.id == current_user['user_id']).first()
-    effective_token = api_token or (user.api_token if user else None) or os.getenv('DERIV_API_TOKEN')
-    effective_app_id = (user.app_id if user else None) or "1089"  # Default fallback
+    
+    # Extract token and app_id from request
+    api_token = balance_request.get('api_token', '').strip()
+    app_id = balance_request.get('app_id', '1089').strip()
+    account_type = balance_request.get('account_type', 'demo')
 
-    logger.info(f"Balance API called with effective_token: {effective_token}, account_type: {account_type}, app_id: {effective_app_id}")
+    logger.info(f"Balance API called with token provided: {bool(api_token)}, account_type: {account_type}, app_id: {app_id}")
 
-    # For demo accounts, return stored balance or default
-    if account_type == 'demo':
-        if user and user.balance is not None:
-            return {"balance": float(user.balance), "account_type": "demo"}
-        else:
-            return {"balance": 10000.0, "account_type": "demo"}
+    # If no token provided, return error asking for token
+    if not api_token:
+        return {
+            "success": False,
+            "error": "API token required",
+            "message": "Please provide your Deriv API token to fetch balance",
+            "balance": 0.0,
+            "account_type": account_type
+        }
 
-    # For live accounts, try to fetch from Deriv API
-    if effective_token:
-        temp_trader = DerivTrader()
-        try:
-            connected = await asyncio.wait_for(
-                temp_trader.connect(api_token=effective_token, app_id=effective_app_id, is_demo=False),
-                timeout=15
-            )
-            if connected and temp_trader.authorized:
-                balance = await asyncio.wait_for(temp_trader.get_balance(), timeout=10)
-                if balance is not None:
-                    await temp_trader.close()
-                    logger.info(f"Live balance fetched successfully: {balance}")
-                    # Update user's stored balance
-                    if user:
-                        user.balance = balance
-                        db.commit()
-                    return {"balance": float(balance), "account_type": "live"}
-            await temp_trader.close()
-        except Exception as e:
-            await temp_trader.close()
-            logger.error(f"Live balance fetch failed: {e}")
+    # Always try to fetch from Deriv API with provided token
+    temp_trader = DerivTrader()
+    try:
+        # Connect with the provided token
+        connected = await asyncio.wait_for(
+            temp_trader.connect(api_token=api_token, app_id=app_id, is_demo=False),
+            timeout=15
+        )
+        
+        if connected and temp_trader.authorized:
+            balance = await asyncio.wait_for(temp_trader.get_balance(), timeout=10)
+            if balance is not None:
+                await temp_trader.close()
+                logger.info(f"Balance fetched successfully: {balance}")
+                
+                # Update user's stored token and balance if successful
+                if user:
+                    user.api_token = api_token
+                    user.app_id = app_id
+                    user.balance = balance
+                    # Determine account type based on response
+                    user.account_type = 'demo' if 'VRT' in str(temp_trader.ws) or account_type == 'demo' else 'live'
+                    db.commit()
+                
+                return {
+                    "success": True,
+                    "balance": float(balance),
+                    "account_type": user.account_type if user else account_type,
+                    "message": "Balance retrieved successfully"
+                }
+        
+        await temp_trader.close()
+        return {
+            "success": False,
+            "error": "Authorization failed",
+            "message": "Invalid API token or connection failed",
+            "balance": 0.0,
+            "account_type": account_type
+        }
+        
+    except asyncio.TimeoutError:
+        await temp_trader.close()
+        return {
+            "success": False,
+            "error": "Connection timeout",
+            "message": "Connection to Deriv timed out. Please try again.",
+            "balance": 0.0,
+            "account_type": account_type
+        }
+    except Exception as e:
+        await temp_trader.close()
+        logger.error(f"Balance fetch failed: {e}")
+        return {
+            "success": False,
+            "error": "Connection error",
+            "message": f"Failed to fetch balance: {str(e)}",
+            "balance": 0.0,
+            "account_type": account_type
+        }
 
-    # Fallback to stored balance or default for live accounts
-    if user and user.balance is not None:
-        return {"balance": float(user.balance), "account_type": "live"}
-    else:
-        return {"balance": 5000.0, "account_type": "live"}
+@router.get("/balance")
+async def get_balance_prompt(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """GET endpoint that always prompts for API token"""
+    return {
+        "success": False,
+        "error": "API token required",
+        "message": "Please provide your Deriv API token to fetch balance. Use POST /api/balance with api_token in request body.",
+        "balance": 0.0,
+        "requires_token": True
+    }
 
 @router.post("/trade")
 async def place_trade(trade_request: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -146,23 +202,37 @@ async def get_ai_prediction():
     prediction = ai_predictor.predict_next_digit()
     return prediction
 
+@router.options("/trades/active")
+async def options_active_trades():
+    return {}
+
 @router.get("/trades/active")
 async def get_active_trades(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(
-        Trade.user_id == current_user['user_id'],
-        Trade.result.in_(['pending', 'win', 'lose'])
-    ).order_by(Trade.timestamp.desc()).limit(10).all()
-    
-    return {
-        "trades": [{
-            "id": t.id,
-            "timestamp": t.timestamp.isoformat(),
-            "stake": t.stake,
-            "contract_type": t.contract_type,
-            "result": t.result,
-            "is_demo": t.is_demo
-        } for t in trades]
-    }
+    try:
+        trades = db.query(Trade).filter(
+            Trade.user_id == current_user['user_id'],
+            Trade.result.in_(['pending', 'win', 'lose'])
+        ).order_by(Trade.timestamp.desc()).limit(10).all()
+        
+        return {
+            "success": True,
+            "trades": [{
+                "id": t.id,
+                "timestamp": t.timestamp.isoformat(),
+                "stake": t.stake,
+                "contract_type": t.contract_type,
+                "result": t.result,
+                "is_demo": t.is_demo
+            } for t in trades],
+            "count": len(trades)
+        }
+    except Exception as e:
+        logger.error(f"Error in get_active_trades: {e}")
+        return {
+            "success": True,
+            "trades": [],
+            "count": 0
+        }
 
 @router.get("/history")
 async def get_history(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -333,28 +403,32 @@ async def toggle_account_type(current_user: dict = Depends(get_current_user), db
         }
 
 @router.post("/trading-mode")
-async def toggle_trading_mode(mode_data: dict):
+async def toggle_trading_mode(mode_data: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     from api.trading_mode import set_trading_mode
 
     new_mode = mode_data.get('mode', 'demo')
     if new_mode not in ['demo', 'live']:
         raise HTTPException(status_code=400, detail="Mode must be 'demo' or 'live'")
 
+    user = db.query(User).filter(User.id == current_user['user_id']).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
     if new_mode == 'live':
-        api_token = os.getenv('DERIV_API_TOKEN')
-        if not api_token:
-            raise HTTPException(status_code=400, detail="DERIV_API_TOKEN is required for live mode.")
+        # For live mode, user must have API token
+        if not user.api_token:
+            raise HTTPException(status_code=400, detail="API token required for live mode. Please set up your API token first.")
 
         # Test connection before switching
         temp_trader = DerivTrader()
         try:
-            app_id = os.getenv('DERIV_APP_ID', '1089')  # Default fallback
+            app_id = user.app_id or '1089'
             connected = await asyncio.wait_for(
-                temp_trader.connect(api_token=api_token, app_id=app_id, is_demo=False),
+                temp_trader.connect(api_token=user.api_token, app_id=app_id, is_demo=False),
                 timeout=15
             )
             if not (connected and temp_trader.authorized):
-                raise HTTPException(status_code=400, detail="Failed to authorize with the provided API token.")
+                raise HTTPException(status_code=400, detail="Failed to authorize with your API token.")
         except asyncio.TimeoutError:
             raise HTTPException(status_code=408, detail="Connection to Deriv timed out.")
         except Exception as e:
@@ -362,16 +436,25 @@ async def toggle_trading_mode(mode_data: dict):
         finally:
             await temp_trader.close()
 
+    # Update user's trading mode
+    user.account_type = new_mode
+    if new_mode == 'demo':
+        user.balance = 10000.0  # Reset demo balance
+    db.commit()
+
+    # Update global trading mode
     if set_trading_mode(new_mode):
-        logger.info(f"Successfully switched trading mode to '{new_mode}'")
+        logger.info(f"Successfully switched trading mode to '{new_mode}' for user {user.id}")
         return {"trading_mode": new_mode, "message": f"Switched to {new_mode} mode"}
     else:
         raise HTTPException(status_code=500, detail="Failed to set trading mode in environment.")
 
 @router.get("/trading-mode")
-async def get_trading_mode_status():
-    from api.trading_mode import get_trading_mode
-    return {"trading_mode": get_trading_mode()}
+async def get_trading_mode_status(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == current_user['user_id']).first()
+    if user:
+        return {"trading_mode": user.account_type or 'demo'}
+    return {"trading_mode": 'demo'}
 
 @router.get("/analytics/advanced")
 async def get_advanced_analytics(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):

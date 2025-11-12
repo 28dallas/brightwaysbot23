@@ -37,7 +37,7 @@ const AITradingHub = ({ currentPrice, priceHistory, onTradeExecute, onSettingsCo
     try {
       // Send current price to backend
       if (currentPrice > 0) {
-        await fetch('http://localhost:8001/api/ai/add-price', {
+        await fetch('http://localhost:8000/api/ai/add-price', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ price: currentPrice })
@@ -45,7 +45,7 @@ const AITradingHub = ({ currentPrice, priceHistory, onTradeExecute, onSettingsCo
       }
       
       // Get multi-model predictions
-      const response = await fetch('http://localhost:8001/api/ai/multi-predictions');
+      const response = await fetch('http://localhost:8000/api/ai/multi-predictions');
       const data = await response.json();
       
       if (data.success && data.predictions) {
@@ -531,7 +531,7 @@ const AITradingHub = ({ currentPrice, priceHistory, onTradeExecute, onSettingsCo
                 };
 
                 try {
-                  const response = await fetch('http://localhost:8001/api/trade', {
+                  const response = await fetch('http://localhost:8000/api/trade', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(tradeData)

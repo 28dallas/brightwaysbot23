@@ -9,9 +9,11 @@ import NotificationCenter from './components/NotificationCenter';
 import TradingStatus from './components/TradingStatus';
 import AutoTrading from './components/AutoTrading';
 import AITradingHub from './components/AITradingHub';
+import AILossPreventionPanel from './components/AILossPreventionPanel';
 import AccountSettings from './components/AccountSettings';
 import TradingModeToggle from './components/TradingModeToggle';
 import Login from './components/Login';
+import BalanceChecker from './components/BalanceChecker';
 
 function App() {
   const [price, setPrice] = useState(0);
@@ -38,10 +40,11 @@ function App() {
   const [barrier2, setBarrier2] = useState('');
   const [multiplier, setMultiplier] = useState(1);
   const [symbol, setSymbol] = useState('R_100');
+  const [lastBalanceUpdate, setLastBalanceUpdate] = useState(Date.now());
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    const wsUrl = token ? `ws://localhost:8001/ws?token=${token}` : 'ws://localhost:8001/ws';
+    const wsUrl = token ? `ws://localhost:8000/ws?token=${token}` : 'ws://localhost:8000/ws';
     const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
@@ -71,26 +74,8 @@ function App() {
           ai_prediction: data.ai_prediction
         }]);
 
-        // Auto trading logic
-        if (isTrading && balance >= stakeAmount) {
-          // Simple example: predict last digit will be even or odd randomly
-          const prediction = Math.random() > 0.5 ? 1 : 0; // 1 for odd, 0 for even
-          const actual = data.last_digit % 2;
-          const result = prediction === actual ? 'win' : 'lose';
-          const pnl = result === 'win' ? stakeAmount * 0.8 : -stakeAmount; // example payout 0.8x
-
-          const newTrade = {
-            id: trades.length + 1,
-            timestamp: new Date().toISOString(),
-            stake: stakeAmount,
-            prediction,
-            result,
-            pnl
-          };
-
-          setTrades(prev => [newTrade, ...prev].slice(0, 50));
-          setBalance(prev => prev + pnl);
-        }
+        // Note: Auto trading is now handled by the backend auto trader
+        // The frontend WebSocket just receives market data
       } catch (error) {
         console.error('Error processing websocket message:', error);
       }
@@ -119,7 +104,7 @@ function App() {
       }
 
       try {
-        const response = await fetch('http://localhost:8001/api/user', {
+        const response = await fetch('http://localhost:8000/api/user', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -155,8 +140,36 @@ function App() {
     if (isAuthenticated) {
       fetchData();
       fetchAIPrediction();
+      checkAutoTradingStatus();
     }
   }, [isAuthenticated]);
+
+  // Check auto trading status
+  const checkAutoTradingStatus = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8000/api/auto-trading/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setIsTrading(data.is_running);
+      }
+    } catch (error) {
+      console.error('Error checking auto trading status:', error);
+    }
+  };
+
+  // Auto-refresh balance every 30 seconds, or every 5 seconds if auto trading
+  useEffect(() => {
+    if (isAuthenticated) {
+      const interval = setInterval(() => {
+        fetchRealBalance();
+      }, isTrading ? 5000 : 30000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated, isTrading]);
   
   useEffect(() => {
     if (isAuthenticated) {
@@ -164,36 +177,69 @@ function App() {
     }
   }, [isAuthenticated]);
 
+  const fetchRealBalance = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      
+      if (accountType === 'demo' || !user?.api_token) {
+        // For demo mode, get balance from user endpoint
+        const response = await fetch('http://localhost:8000/api/user', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (response.ok) {
+          const userData = await response.json();
+          setBalance(userData.balance);
+          setLastBalanceUpdate(Date.now());
+        }
+      } else {
+        // For live mode, get balance from Deriv
+        const response = await fetch('http://localhost:8000/api/balance', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            api_token: user.api_token,
+            app_id: user.app_id || '1089'
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success) {
+            setBalance(data.balance);
+            setAccountType(data.account_type);
+            setLastBalanceUpdate(Date.now());
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching balance:', error);
+    }
+  };
+
   const fetchData = async () => {
     try {
       const token = localStorage.getItem('token');
       const headers = {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       };
-      if (apiToken) {
-        headers['api_token'] = apiToken;
-      }
-      const accountTypeParam = accountType ? `&account_type=${accountType}` : '';
 
-      const balanceResponse = await fetch(`http://localhost:8001/api/balance?${Date.now()}${accountTypeParam}`, { headers });
-      if (balanceResponse.ok) {
-        const balanceData = await balanceResponse.json();
-        console.log('Balance data received:', balanceData);
-
-        const newBalance = balanceData.balance || 10000;
-        setBalance(newBalance);
-        if (initialBalance === 10000) {
-          setInitialBalance(newBalance);
-        }
-        setAccountType(balanceData.account_type || 'demo');
+      // If user has API token, fetch real balance
+      if (user?.api_token) {
+        await fetchRealBalance();
       } else {
-        console.error('Balance API error:', balanceResponse.status);
+        // Default demo balance
         setBalance(10000);
         setAccountType('demo');
       }
 
       try {
-        const historyResponse = await fetch('http://localhost:8001/api/history', { headers });
+        const historyResponse = await fetch('http://localhost:8000/api/history', { headers });
         if (historyResponse.ok) {
           const historyData = await historyResponse.json();
           setHistoricalTicks(historyData.ticks || []);
@@ -248,7 +294,7 @@ function App() {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       };
 
-      const response = await fetch('http://localhost:8001/api/account/toggle', {
+      const response = await fetch('http://localhost:8000/api/account/toggle', {
         method: 'POST',
         headers
       });
@@ -273,7 +319,7 @@ function App() {
   const saveApiToken = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8001/api/account/api-token', {
+      const response = await fetch('http://localhost:8000/api/account/api-token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -302,9 +348,13 @@ function App() {
 
   const placeTrade = async (prediction) => {
     try {
-      const response = await fetch('http://localhost:8001/api/trade', {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8000/api/trade', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
           contract_type: selectedContract,
           symbol: symbol,
@@ -320,7 +370,12 @@ function App() {
       
       if (result.success) {
         alert(`Trade placed! Contract ID: ${result.contract_id}`);
-        fetchData(); // Refresh balance and trades
+        
+        // Force immediate balance refresh
+        setTimeout(() => {
+          fetchRealBalance();
+          fetchData();
+        }, 500);
       } else {
         alert('Trade failed: ' + (result.detail || 'Unknown error'));
       }
@@ -367,6 +422,145 @@ function App() {
     setTradeDuration(settings.duration);
   };
 
+  const updateBalance = async (amount) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8000/api/update-balance', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ amount })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setBalance(result.new_balance);
+      }
+    } catch (error) {
+      console.error('Balance update error:', error);
+    }
+  };
+
+  const placeDemoTrade = async () => {
+    // Simulate a trade result
+    const win = Math.random() > 0.5;
+    const stake = 1.0;
+    const change = win ? 0.8 : -1.0; // 80% profit or full loss
+    
+    await updateBalance(change);
+    alert(`Demo Trade: ${win ? 'WIN' : 'LOSS'} - ${win ? '+$0.80' : '-$1.00'}`);
+  };
+
+  const handleAutoTrading = async () => {
+    if (accountType === 'live' && !user?.api_token) {
+      alert('API token is required for live trading. Please set up your API token first.');
+      setShowApiTokenModal(true);
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      
+      // First check current status
+      const statusResponse = await fetch('http://localhost:8000/api/auto-trading/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      let currentlyRunning = isTrading;
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json();
+        currentlyRunning = statusData.is_running;
+        setIsTrading(currentlyRunning); // Sync with backend
+      }
+      
+      const endpoint = currentlyRunning ? '/api/auto-trading/stop' : '/api/auto-trading/start';
+      
+      const requestBody = currentlyRunning ? {} : {
+        type: "fixed_stake",
+        fixed_stake_amount: stakeAmount,
+        min_confidence: 0.6,
+        contract_type: selectedContract,
+        symbol: symbol,
+        duration: tradeDuration,
+        duration_unit: "t",
+        check_interval: 30,
+        trade_interval: 60
+      };
+
+      console.log(`${currentlyRunning ? 'Stopping' : 'Starting'} auto trading...`);
+      
+      const response = await fetch(`http://localhost:8000${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      const result = await response.json();
+      console.log('Auto trading response:', result);
+
+      if (response.ok && result.success) {
+        setIsTrading(!currentlyRunning);
+        alert(result.message || (currentlyRunning ? 'Auto trading stopped' : `Auto trading started in ${accountType} mode`));
+        
+        // Refresh balance after starting/stopping
+        setTimeout(() => fetchRealBalance(), 1000);
+        
+        // If starting auto trading, refresh balance every 10 seconds
+        if (!currentlyRunning) {
+          const balanceInterval = setInterval(() => {
+            fetchRealBalance();
+          }, 10000);
+          
+          // Clear interval after 5 minutes or when trading stops
+          setTimeout(() => clearInterval(balanceInterval), 300000);
+        }
+      } else {
+        console.error('Auto trading failed:', result);
+        alert('Failed to ' + (currentlyRunning ? 'stop' : 'start') + ' auto trading: ' + (result.detail || result.message || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error toggling auto trading:', error);
+      alert('Error ' + (isTrading ? 'stopping' : 'starting') + ' auto trading: ' + error.message);
+    }
+  };
+
+  const handleBalanceUpdate = async (balanceData) => {
+    // Update dashboard with new balance and save token
+    setBalance(balanceData.balance);
+    setAccountType(balanceData.accountType);
+    setLastBalanceUpdate(Date.now());
+    
+    // Save API token to user account
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('http://localhost:8000/api/account/api-token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          api_token: balanceData.apiToken,
+          app_id: balanceData.appId
+        })
+      });
+      
+      // Update user state
+      setUser(prev => ({
+        ...prev,
+        api_token: balanceData.apiToken,
+        app_id: balanceData.appId
+      }));
+    } catch (error) {
+      console.error('Error saving API token:', error);
+    }
+  };
+
   const freqData = digitFreq.map((freq, digit) => ({ digit, frequency: freq }));
 
 
@@ -391,14 +585,12 @@ function App() {
               🎯 Next: {aiPrediction.prediction} ({(aiPrediction.confidence * 100).toFixed(0)}%)
             </div>
           )}
-          <button
-            onClick={toggleAccountType}
-            className={`px-3 py-1 rounded text-sm transition-colors ${
-              accountType === 'demo' ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'
-            }`}
-          >
-            {accountType.toUpperCase()} {accountType === 'demo' ? '📊' : '💰'}
-          </button>
+          <div className={`px-3 py-1 rounded-lg text-sm font-medium ${
+            accountType === 'demo' ? 'bg-yellow-600' : 'bg-red-600'
+          }`}>
+            {accountType === 'demo' ? '📊 DEMO' : '💰 LIVE'}
+          </div>
+
           <div className="text-white">
             👋 {user?.full_name || user?.email}
           </div>
@@ -412,8 +604,10 @@ function App() {
         {[
           { key: 'dashboard', label: '📊 Dashboard', icon: '📊' },
           { key: 'ai-hub', label: '🤖 AI Trading Hub', icon: '🤖' },
+          { key: 'ai-protection', label: '🛡️ AI Loss Prevention', icon: '🛡️' },
           { key: 'strategy', label: '🛠️ Strategy Builder', icon: '🛠️' },
           { key: 'analytics', label: '📈 Advanced Analytics', icon: '📈' },
+          { key: 'balance', label: '💰 Check Balance', icon: '💰' },
           { key: 'settings', label: '⚙️ Account Settings', icon: '⚙️' },
           { key: 'notifications', label: '🔔 Notifications', icon: '🔔' }
         ].map(tab => (
@@ -440,12 +634,28 @@ function App() {
         </div>
         
         <div className="bg-gray-800 p-6 rounded-lg">
-          <h2 className="text-xl font-semibold mb-4">Account Balance</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
+            Account Balance
+            <button 
+              onClick={() => {
+                console.log('Refresh button clicked!');
+                fetchRealBalance();
+              }}
+              className="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded"
+            >
+              Refresh
+            </button>
+          </h2>
           <div className={`text-3xl font-mono ${balance >= 1000 ? 'text-green-400' : balance >= 500 ? 'text-yellow-400' : 'text-red-400'}`}>
             ${(balance || 0).toFixed(2)}
           </div>
           <div className="text-sm text-gray-400 mt-2">
-            P&L: ${((balance || 0) - (initialBalance || 0)).toFixed(2)}
+            P&L: <span className={`${((balance || 0) - (initialBalance || 0)) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              ${((balance || 0) - (initialBalance || 0)).toFixed(2)}
+            </span>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {accountType.toUpperCase()} • Last updated: {new Date(lastBalanceUpdate).toLocaleTimeString()}
           </div>
         </div>
         
@@ -594,18 +804,42 @@ function App() {
               </button>
             </div>
             <button 
-              onClick={() => setIsTrading(!isTrading)}
-              disabled={balance < stakeAmount}
+              onClick={handleAutoTrading}
+              disabled={balance < stakeAmount || (accountType === 'live' && !user?.api_token)}
               className={`w-full px-6 py-2 rounded font-medium ${
-                balance < stakeAmount 
+                balance < stakeAmount || !user?.api_token
                   ? 'bg-gray-600 cursor-not-allowed' 
                   : isTrading 
                     ? 'bg-red-600 hover:bg-red-700' 
                     : 'bg-blue-600 hover:bg-blue-700'
               }`}
             >
-              {balance < stakeAmount ? 'Insufficient Balance' : isTrading ? 'Stop Auto Trading' : 'Start Auto Trading'}
+              {!user?.api_token && accountType === 'live' ? 'API Token Required' : balance < stakeAmount ? 'Insufficient Balance' : isTrading ? 'Stop Auto Trading' : `Start Auto Trading (${accountType.toUpperCase()})`}
             </button>
+            {accountType === 'demo' && (
+              <>
+                <button 
+                  onClick={placeDemoTrade}
+                  className="w-full px-6 py-2 bg-green-600 hover:bg-green-700 rounded font-medium mt-2"
+                >
+                  Place Demo Trade
+                </button>
+                <div className="flex gap-2 mt-2">
+                  <button 
+                    onClick={() => updateBalance(-1)}
+                    className="flex-1 px-3 py-1 bg-red-500 hover:bg-red-600 rounded text-sm"
+                  >
+                    -$1
+                  </button>
+                  <button 
+                    onClick={() => updateBalance(1)}
+                    className="flex-1 px-3 py-1 bg-green-500 hover:bg-green-600 rounded text-sm"
+                  >
+                    +$1
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
         
@@ -722,6 +956,10 @@ function App() {
         />
       )}
       
+      {activeTab === 'ai-protection' && (
+        <AILossPreventionPanel />
+      )}
+      
       {activeTab === 'strategy' && (
         <EnhancedStrategyBuilder onSaveStrategy={handleSaveStrategy} />
       )}
@@ -732,6 +970,10 @@ function App() {
       
       {activeTab === 'settings' && (
         <AccountSettings />
+      )}
+      
+      {activeTab === 'balance' && (
+        <BalanceChecker onBalanceUpdate={handleBalanceUpdate} />
       )}
       
       {activeTab === 'notifications' && (

@@ -91,6 +91,8 @@ class DerivTrader:
         try:
             # Build parameters based on contract type
             parameters = {
+                "amount": float(contract_request["amount"]),
+                "basis": "stake",
                 "contract_type": contract_request["contract_type"],
                 "symbol": contract_request["symbol"],
                 "duration": int(contract_request["duration"]),
@@ -98,15 +100,14 @@ class DerivTrader:
                 "currency": contract_request.get("currency", "USD")
             }
 
-            # Add contract-specific parameters
-            if contract_request["contract_type"] == "DIGITMATCH":
-                # For digit matching, barrier specifies the digit to match
+            # Add contract-specific parameters only when needed
+            if contract_request["contract_type"] == "DIGITMATCH" and "barrier" in contract_request:
                 parameters["barrier"] = contract_request["barrier"]
-            elif contract_request.get("barrier"):
+            elif contract_request["contract_type"] in ["CALL", "PUT"] and "barrier" in contract_request:
                 parameters["barrier"] = contract_request["barrier"]
 
             buy_request = {
-                "buy": contract_request.get("contract_id", 1),
+                "buy": "1",
                 "price": float(contract_request["amount"]),
                 "parameters": parameters
             }

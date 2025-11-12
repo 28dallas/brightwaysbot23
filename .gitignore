@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+debug_*.py
+check_*.py
+simple_*.py
+force_*.py
+demo_*.py
+restart_*.py
+set_*.py
+add_*.js
+balance_*.json
+
+# Cache
+.cache/
+*.pack
+*.pack_
+
+# Temporary files
+*.tmp
+*.temp
+
+# AI models
+ai_models/
+
+# Frontend build
+frontend/build/
+frontend/dist/
+
+# Backend specific
+backend/trading.db
+backend/.env
+
+# Other
+LOSS_PREVENTION_GUIDE.md
+LIVE_TRADING_SETUP.md
+README.md
+requirements.txt
+package-lock.json
+docker-compose.yml
+Dockerfile

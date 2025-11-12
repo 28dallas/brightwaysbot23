@@ -10,7 +10,7 @@ const AutoTrading = () => {
   const startAutoTrading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8002/api/auto-trading/start', {
+      const response = await fetch('http://localhost:8000/api/auto-trading/start', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -41,7 +41,7 @@ const AutoTrading = () => {
   const stopAutoTrading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8002/api/auto-trading/stop', {
+      const response = await fetch('http://localhost:8000/api/auto-trading/stop', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });

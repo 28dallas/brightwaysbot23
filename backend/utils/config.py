@@ -1,8 +1,15 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from the correct path
+backend_dir = Path(__file__).parent.parent
+env_path = backend_dir / '.env'
+load_dotenv(env_path)
+
+# Also try loading from root directory as fallback
+root_env_path = backend_dir.parent / '.env'
+load_dotenv(root_env_path)
 
 class Config:
     # Database
