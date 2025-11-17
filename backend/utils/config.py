@@ -4,12 +4,14 @@ from dotenv import load_dotenv
 
 # Load environment variables from the correct path
 backend_dir = Path(__file__).parent.parent
-env_path = backend_dir / '.env'
-load_dotenv(env_path)
 
-# Also try loading from root directory as fallback
+# Load from root directory first (higher priority)
 root_env_path = backend_dir.parent / '.env'
 load_dotenv(root_env_path)
+
+# Then load from backend directory (lower priority)
+env_path = backend_dir / '.env'
+load_dotenv(env_path)
 
 class Config:
     # Database
@@ -26,7 +28,7 @@ class Config:
     # Trading
     TRADING_MODE = os.getenv('TRADING_MODE', 'demo')
     DEFAULT_STAKE = float(os.getenv('DEFAULT_STAKE', '1.0'))
-    MAX_STAKE = float(os.getenv('MAX_STAKE', '5.0'))
+    MAX_STAKE = float(os.getenv('MAX_STAKE', '10.0'))
     MIN_TRADE_INTERVAL = int(os.getenv('MIN_TRADE_INTERVAL', '30'))
     MAX_CONCURRENT_TRADES = int(os.getenv('MAX_CONCURRENT_TRADES', '3'))
 

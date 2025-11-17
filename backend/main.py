@@ -12,14 +12,17 @@ import numpy as np
 from typing import Optional
 import uuid
 from services.deriv_trader import DerivTrader
-from api import auth
+from api import auth, routes
 
 load_dotenv()
 
 app = FastAPI()
 
 # Include auth routes
-app.include_router(auth.router, prefix="", tags=["auth"])
+app.include_router(auth.router, prefix="/api", tags=["auth"])
+
+# Include trading routes
+app.include_router(routes.router, prefix="/api", tags=["trading"])
 
 # Pydantic models
 class TradeRequest(BaseModel):
@@ -47,11 +50,15 @@ def init_db():
     conn.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY,
-            email TEXT,
+            email TEXT UNIQUE,
+            hashed_password TEXT,
             full_name TEXT,
             account_type TEXT DEFAULT 'demo',
             balance REAL DEFAULT 1221.95,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            api_token TEXT,
+            app_id TEXT,
+            subscription_plan TEXT DEFAULT 'free'
         )
     ''')
     conn.execute('''
@@ -63,6 +70,8 @@ def init_db():
             prediction INTEGER,
             result TEXT,
             pnl REAL,
+            strategy_id INTEGER,
+            confidence REAL,
             contract_id TEXT,
             contract_type TEXT,
             is_demo BOOLEAN DEFAULT 1,
@@ -162,8 +171,12 @@ def ensure_default_user():
     conn = sqlite3.connect('trading.db')
     cursor = conn.execute("SELECT id FROM users WHERE id = 1")
     if not cursor.fetchone():
+        # Use a simple hash for demo purposes
+        import hashlib
+        hashed_password = hashlib.sha256("password123".encode()).hexdigest()
         conn.execute(
-            "INSERT INTO users (id, email, full_name, account_type, balance) VALUES (1, 'demo@brightbot.com', 'Demo User', 'demo', 1221.95)"
+            "INSERT INTO users (id, email, hashed_password, full_name, account_type, balance) VALUES (1, 'demo@brightbot.com', ?, 'Demo User', 'demo', 1221.95)",
+            (hashed_password,)
         )
         conn.commit()
     conn.close()
@@ -189,111 +202,7 @@ async def place_trade(trade: TradeRequest):
     
     return result
 
-@app.get("/api/balance")
-async def get_balance():
-    import logging
-    logger = logging.getLogger("uvicorn.error")
-    api_token = os.getenv('DERIV_API_TOKEN')
 
-    logger.info(f"Fetching balance with API token: {'set' if api_token else 'not set'}")
-
-    trader = None
-    conn = None
-    
-    try:
-        if api_token:
-            # Try to get real balance from Deriv
-            trader = DerivTrader()
-            
-            # Try live account first with timeout
-            try:
-                logger.info("Connecting to Deriv live account")
-                connected = await asyncio.wait_for(
-                    trader.connect(api_token=api_token, is_demo=False), 
-                    timeout=10
-                )
-                
-                if connected and trader.authorized:
-                    balance = await asyncio.wait_for(trader.get_balance(), timeout=10)
-                    if balance is not None and isinstance(balance, (int, float)):
-                        # Update DB balance safely
-                        conn = sqlite3.connect('trading.db')
-                        conn.execute(
-                            "UPDATE users SET balance = ?, account_type = 'live' WHERE id = 1", 
-                            (float(balance),)
-                        )
-                        conn.commit()
-                        conn.close()
-                        conn = None
-                        
-                        await trader.close()
-                        return {"balance": float(balance), "currency": "USD", "account_type": "live"}
-                        
-            except asyncio.TimeoutError:
-                logger.warning("Live account connection timeout")
-            except Exception as e:
-                logger.error(f"Live account error: {e}")
-            finally:
-                if trader:
-                    await trader.close()
-
-            # Try demo account
-            try:
-                logger.info("Connecting to Deriv demo account")
-                trader = DerivTrader()
-                connected = await asyncio.wait_for(
-                    trader.connect(api_token=api_token, is_demo=True), 
-                    timeout=10
-                )
-                
-                if connected and trader.authorized:
-                    balance = await asyncio.wait_for(trader.get_balance(), timeout=10)
-                    if balance is not None and isinstance(balance, (int, float)):
-                        # Update DB balance safely
-                        conn = sqlite3.connect('trading.db')
-                        conn.execute(
-                            "UPDATE users SET balance = ?, account_type = 'demo' WHERE id = 1", 
-                            (float(balance),)
-                        )
-                        conn.commit()
-                        conn.close()
-                        conn = None
-                        
-                        await trader.close()
-                        return {"balance": float(balance), "currency": "USD", "account_type": "demo"}
-                        
-            except asyncio.TimeoutError:
-                logger.warning("Demo account connection timeout")
-            except Exception as e:
-                logger.error(f"Demo account error: {e}")
-            finally:
-                if trader:
-                    await trader.close()
-
-    except Exception as e:
-        logger.error(f"Unexpected error in balance fetch: {e}")
-    finally:
-        # Ensure cleanup
-        if trader:
-            await trader.close()
-        if conn:
-            conn.close()
-
-    # Fallback to DB balance with error handling
-    try:
-        conn = sqlite3.connect('trading.db')
-        cursor = conn.execute("SELECT balance, account_type FROM users WHERE id = 1")
-        row = cursor.fetchone()
-        balance = float(row[0]) if row and row[0] is not None else 10000.0
-        account_type = row[1] if row and row[1] else "demo"
-        conn.close()
-        
-        logger.info(f"Returning fallback balance: {balance} ({account_type})")
-        return {"balance": balance, "currency": "USD", "account_type": account_type}
-        
-    except Exception as e:
-        logger.error(f"Database fallback error: {e}")
-        return {"balance": 10000.0, "currency": "USD", "account_type": "demo"}
 
 @app.get("/api/ai/prediction")
 async def get_ai_prediction():
@@ -341,4 +250,4 @@ async def get_analytics():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

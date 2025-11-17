@@ -14,6 +14,8 @@ import AccountSettings from './components/AccountSettings';
 import TradingModeToggle from './components/TradingModeToggle';
 import Login from './components/Login';
 import BalanceChecker from './components/BalanceChecker';
+import LiveChartsPanel from './components/LiveChartsPanel';
+import IntegrationPanel from './components/IntegrationPanel';
 
 function App() {
   const [price, setPrice] = useState(0);
@@ -44,7 +46,7 @@ function App() {
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    const wsUrl = token ? `ws://localhost:8000/ws?token=${token}` : 'ws://localhost:8000/ws';
+    const wsUrl = token ? `ws://localhost:8001/ws?token=${token}` : 'ws://localhost:8001/ws';
     const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
@@ -104,7 +106,7 @@ function App() {
       }
 
       try {
-        const response = await fetch('http://localhost:8000/api/user', {
+        const response = await fetch('http://localhost:8001/api/user', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -148,7 +150,7 @@ function App() {
   const checkAutoTradingStatus = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8000/api/auto-trading/status', {
+      const response = await fetch('http://localhost:8001/api/auto-trading/status', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -183,7 +185,7 @@ function App() {
       
       if (accountType === 'demo' || !user?.api_token) {
         // For demo mode, get balance from user endpoint
-        const response = await fetch('http://localhost:8000/api/user', {
+        const response = await fetch('http://localhost:8001/api/user', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -196,7 +198,7 @@ function App() {
         }
       } else {
         // For live mode, get balance from Deriv
-        const response = await fetch('http://localhost:8000/api/balance', {
+        const response = await fetch('http://localhost:8001/api/balance', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -239,7 +241,7 @@ function App() {
       }
 
       try {
-        const historyResponse = await fetch('http://localhost:8000/api/history', { headers });
+        const historyResponse = await fetch('http://localhost:8001/api/history', { headers });
         if (historyResponse.ok) {
           const historyData = await historyResponse.json();
           setHistoricalTicks(historyData.ticks || []);
@@ -294,7 +296,7 @@ function App() {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       };
 
-      const response = await fetch('http://localhost:8000/api/account/toggle', {
+      const response = await fetch('http://localhost:8001/api/account/toggle', {
         method: 'POST',
         headers
       });
@@ -305,7 +307,7 @@ function App() {
         setAccountType(result.account_type);
         setBalance(result.balance);
         setInitialBalance(result.balance);
-        alert(`Switched to ${result.account_type.toUpperCase()} mode. Balance: $${result.balance}`);
+        alert(`Switched to ${(result.account_type || 'DEMO').toUpperCase()} mode. Balance: $${result.balance}`);
         setTimeout(() => fetchData(), 1000); // Refresh after 1 second
       } else {
         alert('Failed to toggle account type: ' + (result.detail || 'Unknown error'));
@@ -319,7 +321,7 @@ function App() {
   const saveApiToken = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8000/api/account/api-token', {
+      const response = await fetch('http://localhost:8001/api/account/api-token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +351,7 @@ function App() {
   const placeTrade = async (prediction) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8000/api/trade', {
+      const response = await fetch('http://localhost:8001/api/trade', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -425,7 +427,7 @@ function App() {
   const updateBalance = async (amount) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:8000/api/update-balance', {
+      const response = await fetch('http://localhost:8001/api/update-balance', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -464,7 +466,7 @@ function App() {
       const token = localStorage.getItem('token');
       
       // First check current status
-      const statusResponse = await fetch('http://localhost:8000/api/auto-trading/status', {
+      const statusResponse = await fetch('http://localhost:8001/api/auto-trading/status', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -491,7 +493,7 @@ function App() {
 
       console.log(`${currentlyRunning ? 'Stopping' : 'Starting'} auto trading...`);
       
-      const response = await fetch(`http://localhost:8000${endpoint}`, {
+      const response = await fetch(`http://localhost:8001${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -538,7 +540,7 @@ function App() {
     // Save API token to user account
     try {
       const token = localStorage.getItem('token');
-      await fetch('http://localhost:8000/api/account/api-token', {
+      await fetch('http://localhost:8001/api/account/api-token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -608,6 +610,8 @@ function App() {
           { key: 'strategy', label: '🛠️ Strategy Builder', icon: '🛠️' },
           { key: 'analytics', label: '📈 Advanced Analytics', icon: '📈' },
           { key: 'balance', label: '💰 Check Balance', icon: '💰' },
+          { key: 'live-charts', label: '📊 Live Charts', icon: '📊' },
+          { key: 'integrations', label: '🔗 Integrations', icon: '🔗' },
           { key: 'settings', label: '⚙️ Account Settings', icon: '⚙️' },
           { key: 'notifications', label: '🔔 Notifications', icon: '🔔' }
         ].map(tab => (
@@ -655,7 +659,7 @@ function App() {
             </span>
           </div>
           <div className="text-xs text-gray-500 mt-1">
-            {accountType.toUpperCase()} • Last updated: {new Date(lastBalanceUpdate).toLocaleTimeString()}
+            {(accountType || 'DEMO').toUpperCase()} • Last updated: {new Date(lastBalanceUpdate).toLocaleTimeString()}
           </div>
         </div>
         
@@ -814,7 +818,7 @@ function App() {
                     : 'bg-blue-600 hover:bg-blue-700'
               }`}
             >
-              {!user?.api_token && accountType === 'live' ? 'API Token Required' : balance < stakeAmount ? 'Insufficient Balance' : isTrading ? 'Stop Auto Trading' : `Start Auto Trading (${accountType.toUpperCase()})`}
+              {!user?.api_token && accountType === 'live' ? 'API Token Required' : balance < stakeAmount ? 'Insufficient Balance' : isTrading ? 'Stop Auto Trading' : `Start Auto Trading (${(accountType || 'DEMO').toUpperCase()})`}
             </button>
             {accountType === 'demo' && (
               <>
@@ -974,6 +978,14 @@ function App() {
       
       {activeTab === 'balance' && (
         <BalanceChecker onBalanceUpdate={handleBalanceUpdate} />
+      )}
+      
+      {activeTab === 'live-charts' && (
+        <LiveChartsPanel />
+      )}
+      
+      {activeTab === 'integrations' && (
+        <IntegrationPanel />
       )}
       
       {activeTab === 'notifications' && (

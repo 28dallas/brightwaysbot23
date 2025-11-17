@@ -88,7 +88,7 @@ const AccountSettings = () => {
       <h3>Account Settings</h3>
       
       <div className="account-info">
-        <p><strong>Account Type:</strong> {accountType.toUpperCase()}</p>
+        <p><strong>Account Type:</strong> {(accountType || 'DEMO').toUpperCase()}</p>
         <p><strong>Balance:</strong> ${balance.toFixed(2)}</p>
       </div>
 

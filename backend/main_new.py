@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from models.database import create_tables, get_db, User, Tick, Trade, SessionLocal
 from api.routes import router as api_router
 from api.ai_routes import router as ai_router
+from integrations.routes import router as integration_router
 from services.contract_monitor import ContractMonitor
 from services.notification_service import NotificationService
 from services.market_data import MarketDataService
@@ -124,6 +125,7 @@ class ApiTokenUpdate(BaseModel):
 # Include API routes
 app.include_router(api_router, prefix="/api")
 app.include_router(ai_router, prefix="/api/ai")
+app.include_router(integration_router, prefix="/api/integrations")
 
 @app.post("/api/register")
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):

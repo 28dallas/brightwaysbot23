@@ -26,7 +26,7 @@ const BalanceChecker = ({ onBalanceUpdate }) => {
     setError('');
 
     try {
-      const response = await fetch('http://localhost:8000/api/balance', {
+      const response = await fetch('http://localhost:8001/api/balance', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
